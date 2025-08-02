@@ -366,6 +366,9 @@ class LangChainWorkflowAssistant:
     
     def _initialize_langchain(self):
         """Initialize LangChain components"""
+        # Initialize tools list first
+        self.langchain_tools = []
+        
         if not self.api_key:
             self.llm = None
             self.memory = None
@@ -412,8 +415,7 @@ class LangChainWorkflowAssistant:
             memory=self.memory
         )
         
-        # Initialize tools list
-        self.langchain_tools = []
+        # Update agent with current tools
         self._update_agent()
     
     def _update_agent(self):
@@ -766,7 +768,7 @@ def main():
         st.divider()
         
         # LangChain Tools Status
-        if api_key and assistant.langchain_tools:
+        if api_key and hasattr(assistant, 'langchain_tools') and assistant.langchain_tools:
             st.subheader("🛠️ LangChain Tools")
             for tool in assistant.langchain_tools:
                 st.write(f"• {tool.name}")
@@ -942,7 +944,7 @@ def main():
         st.metric("Connected Servers", len(assistant.active_servers))
     
     with col2:
-        st.metric("LangChain Tools", len(assistant.langchain_tools) if assistant.langchain_tools else 0)
+        st.metric("LangChain Tools", len(getattr(assistant, 'langchain_tools', [])))
     
     with col3:
         st.metric("Chat Messages", len(st.session_state.messages))

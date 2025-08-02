@@ -1,0 +1,42 @@
+# Core Streamlit Framework
+streamlit>=1.28.0
+
+# Async HTTP requests for MCP server communication
+aiohttp>=3.8.0
+
+# LangChain components for AI workflow orchestration
+langchain>=0.1.0
+langchain-openai>=0.0.5
+
+# OpenAI API client (used by LangChain for OpenRouter)
+openai>=1.0.0
+
+# Data validation and settings management
+pydantic>=2.0.0
+
+# Python standard library enhancements
+typing-extensions>=4.0.0
+
+# JSON handling (usually included with Python)
+# json - built-in
+
+# Async support
+asyncio-compat>=0.1.2
+
+# Logging (built-in with Python)
+# logging - built-in
+
+# Date and time utilities (built-in with Python)  
+# datetime - built-in
+
+# Operating system interface (built-in with Python)
+# os - built-in
+
+# Time-related functions (built-in with Python)
+# time - built-in
+
+# HTTP requests (fallback for non-async operations)
+requests>=2.28.0
+
+# Data classes support (built-in with Python 3.7+)
+# dataclasses - built-in

@@ -8,6 +8,7 @@ requests
 # LangChain for AI workflow orchestration
 langchain
 langchain-openai
+langchain_community
 
 # OpenAI API client (used by LangChain for OpenRouter)
 openai

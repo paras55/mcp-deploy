@@ -175,9 +175,13 @@ class MCPServerAdapter:
             raise Exception("No server URL provided")
             
         try:
-            # Initialize HTTP session
+            # Initialize HTTP session with proper headers for MCP
             self.session = aiohttp.ClientSession(
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "User-Agent": "Workflow-Assistant/1.0.0"
+                },
                 timeout=aiohttp.ClientTimeout(total=30)
             )
             
@@ -188,7 +192,12 @@ class MCPServerAdapter:
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {},
+                    "capabilities": {
+                        "roots": {
+                            "listChanged": True
+                        },
+                        "sampling": {}
+                    },
                     "clientInfo": {
                         "name": "Workflow Assistant",
                         "version": "1.0.0"
@@ -196,7 +205,14 @@ class MCPServerAdapter:
                 }
             }
             
-            async with self.session.post(self.server_info.url, json=init_payload) as response:
+            async with self.session.post(
+                self.server_info.url, 
+                json=init_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                }
+            ) as response:
                 if response.status == 200:
                     result = await response.json()
                     if "result" in result:
@@ -206,7 +222,8 @@ class MCPServerAdapter:
                     else:
                         raise Exception(f"Initialize failed: {result.get('error', 'Unknown error')}")
                 else:
-                    raise Exception(f"HTTP {response.status}: {await response.text()}")
+                    error_text = await response.text()
+                    raise Exception(f"HTTP {response.status}: {error_text}")
                     
         except Exception as e:
             if self.session:
@@ -233,7 +250,14 @@ class MCPServerAdapter:
                 "method": "tools/list"
             }
             
-            async with self.session.post(self.server_info.url, json=payload) as response:
+            async with self.session.post(
+                self.server_info.url, 
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                }
+            ) as response:
                 if response.status == 200:
                     result = await response.json()
                     if "result" in result:
@@ -261,7 +285,14 @@ class MCPServerAdapter:
                 }
             }
             
-            async with self.session.post(self.server_info.url, json=payload) as response:
+            async with self.session.post(
+                self.server_info.url, 
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                }
+            ) as response:
                 if response.status == 200:
                     result = await response.json()
                     return self._format_response(result)

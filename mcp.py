@@ -162,36 +162,36 @@ class MCPServerTool(BaseTool):
         
         return params
 
-# Real MCP Adapter for individual servers
+# Real MCP Adapter for individual servers with proper Streamable HTTP implementation
 class MCPServerAdapter:
     def __init__(self, server_info: MCPServerInfo):
         self.server_info = server_info
         self.session = None
         self.connected = False
+        self.session_id = None
+        self.event_source = None
     
     async def connect(self):
-        """Connect to the MCP server via HTTPS stream"""
+        """Connect to the MCP server using Streamable HTTP protocol"""
         if not self.server_info.url:
             raise Exception("No server URL provided")
             
         try:
-            # Initialize HTTP session with proper headers for MCP
+            # Initialize HTTP session with proper MCP headers
             self.session = aiohttp.ClientSession(
                 headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
                     "User-Agent": "Workflow-Assistant/1.0.0"
                 },
                 timeout=aiohttp.ClientTimeout(total=30)
             )
             
-            # Test connection with initialize request
+            # Step 1: Initialize connection with proper MCP protocol
             init_payload = {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": "init-1",
                 "method": "initialize",
                 "params": {
-                    "protocolVersion": "2024-11-05",
+                    "protocolVersion": "2025-03-26",
                     "capabilities": {
                         "roots": {
                             "listChanged": True
@@ -205,17 +205,28 @@ class MCPServerAdapter:
                 }
             }
             
+            # Send initialize request with proper headers
             async with self.session.post(
-                self.server_info.url, 
+                self.server_info.url,
                 json=init_payload,
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream"
                 }
             ) as response:
-                if response.status == 200:
+                
+                # Check if response is SSE stream or JSON
+                content_type = response.headers.get('Content-Type', '')
+                
+                if 'text/event-stream' in content_type:
+                    # Handle SSE response - read the stream for session ID
+                    await self._handle_sse_initialization(response)
+                elif 'application/json' in content_type and response.status == 200:
+                    # Handle JSON response
                     result = await response.json()
                     if "result" in result:
+                        # Extract session ID from headers if present
+                        self.session_id = response.headers.get('Mcp-Session-Id')
                         self.connected = True
                         self.server_info.connected = True
                         return True
@@ -230,10 +241,40 @@ class MCPServerAdapter:
                 await self.session.close()
             raise Exception(f"Connection failed: {str(e)}")
     
+    async def _handle_sse_initialization(self, response):
+        """Handle SSE stream initialization to extract session info"""
+        try:
+            async for line in response.content:
+                line = line.decode('utf-8').strip()
+                
+                if line.startswith('data: '):
+                    data = line[6:]  # Remove 'data: ' prefix
+                    try:
+                        event_data = json.loads(data)
+                        if event_data.get('method') == 'initialize' or 'result' in event_data:
+                            # Extract session ID from response headers
+                            self.session_id = response.headers.get('Mcp-Session-Id')
+                            self.connected = True
+                            self.server_info.connected = True
+                            return True
+                    except json.JSONDecodeError:
+                        continue
+                        
+            raise Exception("No valid initialization response received from SSE stream")
+            
+        except Exception as e:
+            raise Exception(f"SSE initialization failed: {str(e)}")
+    
     async def disconnect(self):
         """Disconnect from the server"""
         self.connected = False
         self.server_info.connected = False
+        self.session_id = None
+        
+        if self.event_source:
+            self.event_source.close()
+            self.event_source = None
+            
         if self.session:
             await self.session.close()
             self.session = None
@@ -246,19 +287,33 @@ class MCPServerAdapter:
         try:
             payload = {
                 "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list"
+                "id": "tools-list",
+                "method": "tools/list",
+                "params": {}
             }
             
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+            
+            # Include session ID if we have one
+            if self.session_id:
+                headers["Mcp-Session-Id"] = self.session_id
+            
             async with self.session.post(
-                self.server_info.url, 
+                self.server_info.url,
                 json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                }
+                headers=headers
             ) as response:
-                if response.status == 200:
+                
+                content_type = response.headers.get('Content-Type', '')
+                
+                if 'text/event-stream' in content_type:
+                    # Handle SSE response
+                    tools = await self._read_sse_response(response)
+                    return tools.get("tools", []) if isinstance(tools, dict) else []
+                elif 'application/json' in content_type and response.status == 200:
                     result = await response.json()
                     if "result" in result:
                         return result["result"].get("tools", [])
@@ -266,7 +321,8 @@ class MCPServerAdapter:
                         return []
                 else:
                     return []
-        except:
+        except Exception as e:
+            print(f"Error listing tools: {e}")
             return []
     
     async def execute_tool(self, tool_name: str, parameters: dict) -> str:
@@ -277,7 +333,7 @@ class MCPServerAdapter:
         try:
             payload = {
                 "jsonrpc": "2.0",
-                "id": 3,
+                "id": f"tool-{tool_name}-{int(time.time())}",
                 "method": "tools/call",
                 "params": {
                     "name": tool_name,
@@ -285,30 +341,80 @@ class MCPServerAdapter:
                 }
             }
             
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+            
+            # Include session ID if we have one
+            if self.session_id:
+                headers["Mcp-Session-Id"] = self.session_id
+            
             async with self.session.post(
-                self.server_info.url, 
+                self.server_info.url,
                 json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream"
-                }
+                headers=headers
             ) as response:
-                if response.status == 200:
+                
+                content_type = response.headers.get('Content-Type', '')
+                
+                if 'text/event-stream' in content_type:
+                    # Handle SSE response
+                    result = await self._read_sse_response(response)
+                    return self._format_response({"result": result})
+                elif 'application/json' in content_type and response.status == 200:
                     result = await response.json()
                     return self._format_response(result)
                 else:
                     error_text = await response.text()
-                    return f"❌ Error executing {tool_name}: {error_text}"
+                    return f"❌ Error executing {tool_name}: HTTP {response.status} - {error_text}"
                     
         except asyncio.TimeoutError:
             return f"⏱️ Timeout executing {tool_name}"
         except Exception as e:
             return f"❌ Error executing {tool_name}: {str(e)}"
     
+    async def _read_sse_response(self, response):
+        """Read and parse SSE stream response"""
+        try:
+            result_data = None
+            
+            async for line in response.content:
+                line = line.decode('utf-8').strip()
+                
+                if line.startswith('data: '):
+                    data = line[6:]  # Remove 'data: ' prefix
+                    
+                    # Skip empty data or comments
+                    if not data or data.startswith(':'):
+                        continue
+                        
+                    try:
+                        event_data = json.loads(data)
+                        
+                        # Look for result in the event data
+                        if 'result' in event_data:
+                            result_data = event_data['result']
+                            break
+                        elif 'error' in event_data:
+                            raise Exception(f"MCP Error: {event_data['error']}")
+                            
+                    except json.JSONDecodeError as e:
+                        print(f"JSON decode error: {e}, data: {data}")
+                        continue
+                        
+            return result_data
+            
+        except Exception as e:
+            raise Exception(f"Error reading SSE response: {str(e)}")
+    
     def _format_response(self, result: dict) -> str:
         """Format the response from MCP server"""
         if "error" in result:
-            return f"❌ Error: {result['error']}"
+            error = result["error"]
+            if isinstance(error, dict):
+                return f"❌ Error: {error.get('message', str(error))}"
+            return f"❌ Error: {error}"
         
         if "result" in result:
             data = result["result"]
@@ -317,7 +423,10 @@ class MCPServerAdapter:
                     # Handle content response
                     content = data["content"]
                     if isinstance(content, list) and len(content) > 0:
-                        return content[0].get("text", str(content))
+                        first_content = content[0]
+                        if isinstance(first_content, dict):
+                            return first_content.get("text", str(content))
+                        return str(first_content)
                     else:
                         return str(content)
                 else:

@@ -129,48 +129,84 @@ class MCPServerTool(BaseTool):
     tool_name: str = Field()
     
     def _run(self, query: str) -> str:
-        """Execute the MCP tool with the given query"""
+        """Execute the MCP tool with the given query - SYNC VERSION"""
         try:
-            # Get or create event loop
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            # Use requests for synchronous HTTP calls instead of aiohttp
+            import requests
+            import json
+            import time
             
             # Parse parameters from query if needed
             params = self._parse_query_params(query)
             
-            # Create a new task in the loop
-            if loop.is_running():
-                # If loop is already running, we need to use run_coroutine_threadsafe
-                import concurrent.futures
-                import threading
-                
-                def run_in_thread():
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    try:
-                        result = new_loop.run_until_complete(
-                            self.server_adapter.execute_tool(self.tool_name, params)
-                        )
-                        return result
-                    finally:
-                        new_loop.close()
-                
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(run_in_thread)
-                    result = future.result(timeout=30)
+            # Get server info
+            server_url = self.server_adapter.server_info.url
+            session_id = self.server_adapter.session_id
+            
+            # Prepare request
+            payload = {
+                "jsonrpc": "2.0",
+                "id": f"tool-{self.tool_name}-{int(time.time())}",
+                "method": "tools/call",
+                "params": {
+                    "name": self.tool_name,
+                    "arguments": params
+                }
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            }
+            
+            # Include session ID if we have one
+            if session_id:
+                headers["Mcp-Session-Id"] = session_id
+            
+            # Make synchronous request
+            response = requests.post(
+                server_url,
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    return self._format_response(result)
+                except:
+                    # Handle text response
+                    return f"✅ {self.tool_name} executed: {response.text[:500]}..."
             else:
-                # Loop is not running, we can run directly
-                result = loop.run_until_complete(
-                    self.server_adapter.execute_tool(self.tool_name, params)
-                )
-            
-            return result
-            
+                return f"❌ Error {response.status_code}: {response.text[:200]}..."
+                
         except Exception as e:
-            return f"Error executing {self.tool_name}: {str(e)}"
+            return f"❌ Error executing {self.tool_name}: {str(e)}"
+    
+    def _format_response(self, result: dict) -> str:
+        """Format the response from MCP server"""
+        if "error" in result:
+            error = result["error"]
+            if isinstance(error, dict):
+                return f"❌ Error: {error.get('message', str(error))}"
+            return f"❌ Error: {error}"
+        
+        if "result" in result:
+            data = result["result"]
+            if isinstance(data, dict):
+                if "content" in data:
+                    content = data["content"]
+                    if isinstance(content, list) and len(content) > 0:
+                        return content[0].get("text", str(content))
+                    return str(content)
+                else:
+                    # Format as readable output
+                    return json.dumps(data, indent=2)[:1000] + "..." if len(str(data)) > 1000 else json.dumps(data, indent=2)
+            else:
+                return str(data)
+        
+        return "✅ Operation completed successfully"
     
     def _parse_query_params(self, query: str) -> dict:
         """Parse query into parameters for the tool"""
@@ -178,44 +214,26 @@ class MCPServerTool(BaseTool):
         
         if self.tool_name == "GMAIL_SEND_EMAIL":
             params = {
-                "to": "user@example.com",  # This should be configured properly
+                "to": "user@example.com",
                 "subject": f"Message: {query}",
                 "body": query
             }
-        elif self.tool_name == "GMAIL_GET_MESSAGES" or self.tool_name == "GMAIL_SEARCH_MESSAGES":
-            # Parse email queries for better parameters
+        elif self.tool_name == "GMAIL_SEARCH_MESSAGES" or self.tool_name == "GMAIL_GET_MESSAGES":
             query_lower = query.lower()
-            params = {}
-            
             if "yesterday" in query_lower:
-                # Add date filtering for yesterday
                 from datetime import datetime, timedelta
                 yesterday = datetime.now() - timedelta(days=1)
                 params["query"] = f"after:{yesterday.strftime('%Y/%m/%d')} before:{(yesterday + timedelta(days=1)).strftime('%Y/%m/%d')}"
             else:
                 params["query"] = "in:inbox"
-                
-            # Set default parameters
-            params.update({
-                "max_results": 20
-            })
+            params["max_results"] = 20
         elif self.tool_name == "connect-gmail":
-            # Connection tool doesn't need parameters
             params = {}
         elif self.tool_name == "GITHUB_LIST_REPOS":
-            # For GitHub repo listing
-            params = {
-                "type": "all",
-                "sort": "updated",
-                "direction": "desc"
-            }
+            params = {"type": "all", "sort": "updated"}
         elif self.tool_name == "GITHUB_LIST_COMMITS":
-            # For GitHub commits
             from datetime import datetime, timedelta
-            params = {
-                "since": (datetime.now() - timedelta(days=7)).isoformat(),
-                "per_page": 10
-            }
+            params = {"since": (datetime.now() - timedelta(days=7)).isoformat()}
         else:
             params = {"query": query}
         
@@ -750,7 +768,7 @@ class LangChainWorkflowAssistant:
                 yield response
     
     async def _simple_process_request(self, user_input: str):
-        """Fallback simple processing without LangChain"""
+        """Fallback simple processing without LangChain - SIMPLIFIED VERSION"""
         # Parse user intent
         intent = self._parse_intent(user_input)
         
@@ -764,32 +782,57 @@ class LangChainWorkflowAssistant:
             
             adapter = self.active_servers[server_name]
             
-            # Special handling for Gmail - check connection first
-            if server_name == "gmail" and intent["action"] != "connect-gmail":
-                yield f"📧 Gmail: Checking connection status..."
+            # Use synchronous requests to avoid event loop issues
+            try:
+                import requests
+                import json
+                import time
                 
-                # First, try to connect to Gmail
-                try:
-                    connect_result = await adapter.execute_tool("connect-gmail", {})
-                    yield f"🔗 Gmail Connection: {connect_result}"
+                # Prepare request
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": f"tool-{intent['action']}-{int(time.time())}",
+                    "method": "tools/call",
+                    "params": {
+                        "name": intent["action"],
+                        "arguments": intent.get("params", {})
+                    }
+                }
+                
+                headers = {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream"
+                }
+                
+                # Include session ID if we have one
+                if adapter.session_id:
+                    headers["Mcp-Session-Id"] = adapter.session_id
+                
+                yield f"🔧 DEBUG: Calling {intent['action']} with params: {intent.get('params', {})}"
+                
+                # Make synchronous request
+                response = requests.post(
+                    adapter.server_info.url,
+                    json=payload,
+                    headers=headers,
+                    timeout=30
+                )
+                
+                yield f"🔧 DEBUG: Response status: {response.status_code}"
+                
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                        formatted_result = adapter._format_response(result)
+                        yield f"{adapter.server_info.icon} {adapter.server_info.name}: {formatted_result}"
+                    except:
+                        # Handle text response
+                        yield f"{adapter.server_info.icon} {adapter.server_info.name}: {response.text[:500]}..."
+                else:
+                    yield f"❌ HTTP {response.status_code}: {response.text[:200]}..."
                     
-                    # If connection successful, proceed with the actual request
-                    if "error" not in connect_result.lower():
-                        await asyncio.sleep(1)  # Wait a moment for connection to establish
-                        result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
-                        yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
-                    else:
-                        yield f"❌ Gmail: Please authenticate first. Visit the OAuth URL shown above."
-                        
-                except Exception as e:
-                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Connection Error: {str(e)}"
-            else:
-                # Use proper async execution for other services
-                try:
-                    result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
-                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
-                except Exception as e:
-                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Error: {str(e)}"
+            except Exception as e:
+                yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Error: {str(e)}"
         
         elif intent["type"] == "complex_workflow":
             async for response in self._handle_complex_workflow(user_input):
@@ -800,7 +843,7 @@ class LangChainWorkflowAssistant:
             for name, adapter in self.active_servers.items():
                 available.append(f"{adapter.server_info.icon} {adapter.server_info.name}")
             
-            yield f"I can help you with: {', '.join(available)}. Try asking me to check GitHub commits, send a Slack message, create a calendar event, or run a workflow across multiple services."
+            yield f"I can help you with: {', '.join(available)}. Try asking me to check GitHub repositories or Gmail messages."
     
     def _parse_intent(self, user_input: str) -> dict:
         """Parse user intent to determine which server and action to use"""

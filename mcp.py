@@ -526,11 +526,9 @@ class LangChainWorkflowAssistant:
         
         # Create workflow analysis chain
         workflow_prompt = PromptTemplate(
-            input_variables=["user_input", "available_tools"],
+            input_variables=["user_input"],
             template="""
             You are a helpful workflow assistant that can use various tools to help users.
-            
-            Available tools: {available_tools}
             
             User request: {user_input}
             
@@ -653,10 +651,7 @@ class LangChainWorkflowAssistant:
                 yield f"🔍 LangChain: Planning workflow..."
                 workflow_analysis = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: self.workflow_chain.run({
-                        "user_input": user_input,
-                        "available_tools": "\n".join(available_tools)
-                    })
+                    lambda: self.workflow_chain.run(user_input)
                 )
                 yield f"📋 Workflow Plan:\n{workflow_analysis}"
             
@@ -691,8 +686,13 @@ class LangChainWorkflowAssistant:
             yield f"🔄 {server_name}: Processing request..."
             
             adapter = self.active_servers[server_name]
-            result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
-            yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
+            
+            # Use proper async execution
+            try:
+                result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
+                yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
+            except Exception as e:
+                yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Error: {str(e)}"
         
         elif intent["type"] == "complex_workflow":
             async for response in self._handle_complex_workflow(user_input):

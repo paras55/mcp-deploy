@@ -174,13 +174,43 @@ class MCPServerTool(BaseTool):
     
     def _parse_query_params(self, query: str) -> dict:
         """Parse query into parameters for the tool"""
-        # Simple parameter parsing - can be enhanced
         params = {}
         
         if self.tool_name == "send_email":
             params = {
+                "to": "user@example.com",  # This should be configured properly
                 "subject": f"Message: {query}",
                 "body": query
+            }
+        elif self.tool_name == "get_emails":
+            # Parse email queries for better parameters
+            query_lower = query.lower()
+            params = {}
+            
+            if "yesterday" in query_lower:
+                # Add date filtering for yesterday
+                from datetime import datetime, timedelta
+                yesterday = datetime.now() - timedelta(days=1)
+                params["date_after"] = yesterday.strftime("%Y-%m-%d")
+                params["date_before"] = yesterday.strftime("%Y-%m-%d")
+            
+            # Set default parameters for Gmail
+            params.update({
+                "max_results": 20,
+                "include_spam_trash": False
+            })
+        elif self.tool_name == "get_repo":
+            # For GitHub repo listing
+            params = {
+                "type": "all",  # all, owner, public, private, member
+                "sort": "updated",
+                "direction": "desc"
+            }
+        elif self.tool_name == "get_commits":
+            # For GitHub commits
+            params = {
+                "since": (datetime.now() - timedelta(days=7)).isoformat(),  # Last week
+                "per_page": 10
             }
         else:
             params = {"query": query}
@@ -375,6 +405,8 @@ class MCPServerAdapter:
             if self.session_id:
                 headers["Mcp-Session-Id"] = self.session_id
             
+            print(f"[DEBUG] Executing tool: {tool_name} with params: {parameters}")
+            
             async with self.session.post(
                 self.server_info.url,
                 json=payload,
@@ -382,21 +414,28 @@ class MCPServerAdapter:
             ) as response:
                 
                 content_type = response.headers.get('Content-Type', '')
+                print(f"[DEBUG] Response content-type: {content_type}, status: {response.status}")
                 
                 if 'text/event-stream' in content_type:
                     # Handle SSE response
                     result = await self._read_sse_response(response)
-                    return self._format_response({"result": result})
+                    formatted_result = self._format_response({"result": result})
+                    print(f"[DEBUG] SSE Result: {formatted_result[:200]}...")
+                    return formatted_result
                 elif 'application/json' in content_type and response.status == 200:
                     result = await response.json()
-                    return self._format_response(result)
+                    formatted_result = self._format_response(result)
+                    print(f"[DEBUG] JSON Result: {formatted_result[:200]}...")
+                    return formatted_result
                 else:
                     error_text = await response.text()
+                    print(f"[DEBUG] Error response: {error_text}")
                     return f"❌ Error executing {tool_name}: HTTP {response.status} - {error_text}"
                     
         except asyncio.TimeoutError:
             return f"⏱️ Timeout executing {tool_name}"
         except Exception as e:
+            print(f"[DEBUG] Exception in execute_tool: {str(e)}")
             return f"❌ Error executing {tool_name}: {str(e)}"
     
     async def _read_sse_response(self, response):
@@ -443,6 +482,11 @@ class MCPServerAdapter:
         
         if "result" in result:
             data = result["result"]
+            
+            # Handle None or empty results
+            if data is None:
+                return "ℹ️ No data returned from the server"
+            
             if isinstance(data, dict):
                 if "content" in data:
                     # Handle content response
@@ -453,7 +497,36 @@ class MCPServerAdapter:
                             return first_content.get("text", str(content))
                         return str(first_content)
                     else:
-                        return str(content)
+                        return str(content) if content else "ℹ️ Empty content"
+                        
+                elif "emails" in data:
+                    # Handle Gmail emails response
+                    emails = data["emails"]
+                    if isinstance(emails, list) and len(emails) > 0:
+                        email_list = []
+                        for i, email in enumerate(emails[:10]):  # Show first 10
+                            sender = email.get("from", "Unknown")
+                            subject = email.get("subject", "No subject")
+                            date = email.get("date", "Unknown date")
+                            email_list.append(f"{i+1}. From: {sender}\n   Subject: {subject}\n   Date: {date}")
+                        return f"📧 Found {len(emails)} emails:\n\n" + "\n\n".join(email_list)
+                    else:
+                        return "📧 No emails found for yesterday"
+                        
+                elif "repositories" in data or "repos" in data:
+                    # Handle GitHub repositories response
+                    repos = data.get("repositories", data.get("repos", []))
+                    if isinstance(repos, list) and len(repos) > 0:
+                        repo_list = []
+                        for i, repo in enumerate(repos[:10]):  # Show first 10
+                            name = repo.get("name", "Unknown")
+                            description = repo.get("description", "No description")
+                            updated = repo.get("updated_at", "Unknown")
+                            repo_list.append(f"{i+1}. {name}\n   Description: {description}\n   Updated: {updated}")
+                        return f"🐙 Found {len(repos)} repositories:\n\n" + "\n\n".join(repo_list)
+                    else:
+                        return "🐙 No repositories found"
+                        
                 else:
                     # Handle other dict responses
                     formatted_lines = []
@@ -462,11 +535,15 @@ class MCPServerAdapter:
                             formatted_lines.append(f"**{key}**: {json.dumps(value, indent=2)}")
                         else:
                             formatted_lines.append(f"**{key}**: {value}")
-                    return "\n".join(formatted_lines)
+                    return "\n".join(formatted_lines) if formatted_lines else "ℹ️ Empty response"
+                    
             elif isinstance(data, list):
-                return "\n".join([f"• {item}" for item in data])
+                if len(data) > 0:
+                    return "\n".join([f"• {item}" for item in data])
+                else:
+                    return "ℹ️ Empty list returned"
             else:
-                return str(data)
+                return str(data) if data else "ℹ️ Empty response"
         
         return "✅ Operation completed successfully"
 

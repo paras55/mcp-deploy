@@ -176,13 +176,13 @@ class MCPServerTool(BaseTool):
         """Parse query into parameters for the tool"""
         params = {}
         
-        if self.tool_name == "send_email":
+        if self.tool_name == "GMAIL_SEND_EMAIL":
             params = {
                 "to": "user@example.com",  # This should be configured properly
                 "subject": f"Message: {query}",
                 "body": query
             }
-        elif self.tool_name == "get_emails":
+        elif self.tool_name == "GMAIL_GET_MESSAGES" or self.tool_name == "GMAIL_SEARCH_MESSAGES":
             # Parse email queries for better parameters
             query_lower = query.lower()
             params = {}
@@ -191,25 +191,29 @@ class MCPServerTool(BaseTool):
                 # Add date filtering for yesterday
                 from datetime import datetime, timedelta
                 yesterday = datetime.now() - timedelta(days=1)
-                params["date_after"] = yesterday.strftime("%Y-%m-%d")
-                params["date_before"] = yesterday.strftime("%Y-%m-%d")
-            
-            # Set default parameters for Gmail
+                params["query"] = f"after:{yesterday.strftime('%Y/%m/%d')} before:{(yesterday + timedelta(days=1)).strftime('%Y/%m/%d')}"
+            else:
+                params["query"] = "in:inbox"
+                
+            # Set default parameters
             params.update({
-                "max_results": 20,
-                "include_spam_trash": False
+                "max_results": 20
             })
-        elif self.tool_name == "get_repo":
+        elif self.tool_name == "connect-gmail":
+            # Connection tool doesn't need parameters
+            params = {}
+        elif self.tool_name == "GITHUB_LIST_REPOS":
             # For GitHub repo listing
             params = {
-                "type": "all",  # all, owner, public, private, member
+                "type": "all",
                 "sort": "updated",
                 "direction": "desc"
             }
-        elif self.tool_name == "get_commits":
+        elif self.tool_name == "GITHUB_LIST_COMMITS":
             # For GitHub commits
+            from datetime import datetime, timedelta
             params = {
-                "since": (datetime.now() - timedelta(days=7)).isoformat(),  # Last week
+                "since": (datetime.now() - timedelta(days=7)).isoformat(),
                 "per_page": 10
             }
         else:
@@ -551,14 +555,14 @@ class LangChainWorkflowAssistant:
             "github": MCPServerInfo(
                 name="GitHub",
                 description="GitHub repository management and operations",
-                capabilities=["get_repo", "create_issue", "get_commits", "search_code"],
+                capabilities=["GITHUB_LIST_REPOS", "GITHUB_GET_REPO", "GITHUB_CREATE_ISSUE", "GITHUB_LIST_COMMITS"],
                 icon="🐙",
                 category="Development"
             ),
             "gmail": MCPServerInfo(
                 name="Gmail",
                 description="Gmail email management",
-                capabilities=["send_email", "get_emails", "create_draft"],
+                capabilities=["GMAIL_SEND_EMAIL", "GMAIL_GET_MESSAGES", "GMAIL_SEARCH_MESSAGES", "connect-gmail"],
                 icon="📧",
                 category="Communication"
             )
@@ -760,12 +764,32 @@ class LangChainWorkflowAssistant:
             
             adapter = self.active_servers[server_name]
             
-            # Use proper async execution
-            try:
-                result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
-                yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
-            except Exception as e:
-                yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Error: {str(e)}"
+            # Special handling for Gmail - check connection first
+            if server_name == "gmail" and intent["action"] != "connect-gmail":
+                yield f"📧 Gmail: Checking connection status..."
+                
+                # First, try to connect to Gmail
+                try:
+                    connect_result = await adapter.execute_tool("connect-gmail", {})
+                    yield f"🔗 Gmail Connection: {connect_result}"
+                    
+                    # If connection successful, proceed with the actual request
+                    if "error" not in connect_result.lower():
+                        await asyncio.sleep(1)  # Wait a moment for connection to establish
+                        result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
+                        yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
+                    else:
+                        yield f"❌ Gmail: Please authenticate first. Visit the OAuth URL shown above."
+                        
+                except Exception as e:
+                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Connection Error: {str(e)}"
+            else:
+                # Use proper async execution for other services
+                try:
+                    result = await adapter.execute_tool(intent["action"], intent.get("params", {}))
+                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: {result}"
+                except Exception as e:
+                    yield f"{adapter.server_info.icon} {adapter.server_info.name}: ❌ Error: {str(e)}"
         
         elif intent["type"] == "complex_workflow":
             async for response in self._handle_complex_workflow(user_input):
@@ -785,19 +809,24 @@ class LangChainWorkflowAssistant:
         # GitHub operations
         if any(word in user_input_lower for word in ["github", "commit", "repo", "issue", "repositories"]):
             if "repo" in user_input_lower or "repositories" in user_input_lower:
-                action = "get_repo"
+                action = "GITHUB_LIST_REPOS"
             elif "commit" in user_input_lower:
-                action = "get_commits"  
+                action = "GITHUB_LIST_COMMITS"  
             elif "issue" in user_input_lower:
-                action = "create_issue"
+                action = "GITHUB_CREATE_ISSUE"
             else:
-                action = "get_repo"  # Default to repo listing
+                action = "GITHUB_LIST_REPOS"  # Default to repo listing
             return {"type": "github", "server": "github", "action": action, "params": {}}
         
         # Gmail operations
         elif any(word in user_input_lower for word in ["gmail", "email", "mail"]):
-            action = "send_email" if "send" in user_input_lower else "get_emails"
-            params = {"to": "", "subject": "Test", "body": "Hello!"} if action == "send_email" else {}
+            if "send" in user_input_lower:
+                action = "GMAIL_SEND_EMAIL"
+                params = {"to": "user@example.com", "subject": "Test", "body": "Hello!"}
+            else:
+                # First try to connect, then search
+                action = "GMAIL_SEARCH_MESSAGES"
+                params = {}
             return {"type": "gmail", "server": "gmail", "action": action, "params": params}
         
         # Complex workflows

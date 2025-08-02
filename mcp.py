@@ -131,21 +131,46 @@ class MCPServerTool(BaseTool):
     def _run(self, query: str) -> str:
         """Execute the MCP tool with the given query"""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            # Get or create event loop
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
             
             # Parse parameters from query if needed
             params = self._parse_query_params(query)
             
-            result = loop.run_until_complete(
-                self.server_adapter.execute_tool(self.tool_name, params)
-            )
+            # Create a new task in the loop
+            if loop.is_running():
+                # If loop is already running, we need to use run_coroutine_threadsafe
+                import concurrent.futures
+                import threading
+                
+                def run_in_thread():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(
+                            self.server_adapter.execute_tool(self.tool_name, params)
+                        )
+                        return result
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_thread)
+                    result = future.result(timeout=30)
+            else:
+                # Loop is not running, we can run directly
+                result = loop.run_until_complete(
+                    self.server_adapter.execute_tool(self.tool_name, params)
+                )
+            
             return result
+            
         except Exception as e:
             return f"Error executing {self.tool_name}: {str(e)}"
-        finally:
-            if 'loop' in locals():
-                loop.close()
     
     def _parse_query_params(self, query: str) -> dict:
         """Parse query into parameters for the tool"""
@@ -486,7 +511,7 @@ class LangChainWorkflowAssistant:
         
         # Initialize LLM with OpenRouter
         self.llm = ChatOpenAI(
-            model_name=self.model.split('/')[-1],  # Extract model name
+            model_name=self.model,  # Use full model name for OpenRouter
             openai_api_key=self.api_key,
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.7,
@@ -685,8 +710,15 @@ class LangChainWorkflowAssistant:
         user_input_lower = user_input.lower()
         
         # GitHub operations
-        if any(word in user_input_lower for word in ["github", "commit", "repo", "issue"]):
-            action = "get_commits" if "commit" in user_input_lower else "get_repo"
+        if any(word in user_input_lower for word in ["github", "commit", "repo", "issue", "repositories"]):
+            if "repo" in user_input_lower or "repositories" in user_input_lower:
+                action = "get_repo"
+            elif "commit" in user_input_lower:
+                action = "get_commits"  
+            elif "issue" in user_input_lower:
+                action = "create_issue"
+            else:
+                action = "get_repo"  # Default to repo listing
             return {"type": "github", "server": "github", "action": action, "params": {}}
         
         # Gmail operations

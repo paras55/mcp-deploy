@@ -405,7 +405,7 @@ class MCPServerAdapter:
             if self.session_id:
                 headers["Mcp-Session-Id"] = self.session_id
             
-            print(f"[DEBUG] Executing tool: {tool_name} with params: {parameters}")
+            debug_info = f"🔧 DEBUG: Executing {tool_name} with params: {parameters}"
             
             async with self.session.post(
                 self.server_info.url,
@@ -414,29 +414,25 @@ class MCPServerAdapter:
             ) as response:
                 
                 content_type = response.headers.get('Content-Type', '')
-                print(f"[DEBUG] Response content-type: {content_type}, status: {response.status}")
+                status_info = f"🔧 DEBUG: Response status: {response.status}, content-type: {content_type}"
                 
                 if 'text/event-stream' in content_type:
                     # Handle SSE response
                     result = await self._read_sse_response(response)
                     formatted_result = self._format_response({"result": result})
-                    print(f"[DEBUG] SSE Result: {formatted_result[:200]}...")
-                    return formatted_result
+                    return f"{debug_info}\n{status_info}\n📊 SSE Result: {formatted_result}"
                 elif 'application/json' in content_type and response.status == 200:
                     result = await response.json()
                     formatted_result = self._format_response(result)
-                    print(f"[DEBUG] JSON Result: {formatted_result[:200]}...")
-                    return formatted_result
+                    return f"{debug_info}\n{status_info}\n📊 JSON Result: {formatted_result}"
                 else:
                     error_text = await response.text()
-                    print(f"[DEBUG] Error response: {error_text}")
-                    return f"❌ Error executing {tool_name}: HTTP {response.status} - {error_text}"
+                    return f"{debug_info}\n{status_info}\n❌ Error Response: {error_text}"
                     
         except asyncio.TimeoutError:
-            return f"⏱️ Timeout executing {tool_name}"
+            return f"⏱️ Timeout executing {tool_name} (30s limit exceeded)"
         except Exception as e:
-            print(f"[DEBUG] Exception in execute_tool: {str(e)}")
-            return f"❌ Error executing {tool_name}: {str(e)}"
+            return f"🔧 DEBUG: Exception in {tool_name}: {str(e)}\n❌ Error executing {tool_name}: {str(e)}"
     
     async def _read_sse_response(self, response):
         """Read and parse SSE stream response"""
@@ -1027,12 +1023,21 @@ def main():
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 if message["role"] == "assistant":
-                    if "🧠 LangChain:" in message["content"]:
-                        st.markdown(f'<div class="langchain-response">{message["content"]}</div>', unsafe_allow_html=True)
-                    elif "🔄" in message["content"]:
-                        st.markdown(f'<div class="tool-response">{message["content"]}</div>', unsafe_allow_html=True)
+                    content = message["content"]
+                    if "🧠 LangChain:" in content:
+                        st.markdown(f'<div class="langchain-response">{content}</div>', unsafe_allow_html=True)
+                    elif "🔄" in content:
+                        st.markdown(f'<div class="tool-response">{content}</div>', unsafe_allow_html=True)
+                    elif "🔧 DEBUG:" in content:
+                        # Show debug information in a code block
+                        with st.expander("🔧 Debug Information", expanded=False):
+                            st.code(content, language="text")
+                        # Also show the main content without debug
+                        clean_content = "\n".join([line for line in content.split("\n") if not line.startswith("🔧 DEBUG:")])
+                        if clean_content.strip():
+                            st.markdown(clean_content)
                     else:
-                        st.markdown(message["content"])
+                        st.markdown(content)
                 else:
                     st.markdown(message["content"])
         
@@ -1142,9 +1147,10 @@ def main():
         st.subheader("💡 Example Prompts")
         example_prompts = [
             "📊 Create a summary of my GitHub activity and send it via email",
-            "📧 Check my recent emails and create GitHub issues for any bug reports",
+            "📧 Get my emails from yesterday",
+            "🐙 Show me all my GitHub repositories",
             "🔄 Set up an automated workflow for daily GitHub activity reports",
-            "🧠 Analyze my GitHub repositories and email me a project status update"
+            "📧 Send an email with my latest GitHub commits"
         ]
         
         for prompt in example_prompts:

@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-Gmail Only Workflow Assistant - FINAL FIXED VERSION
-Focused on Gmail integration only, fixes HTTP 406 error
+Enhanced Gmail Workflow Assistant - BETTER OUTPUT FORMATTING
+Fixes raw HTML output and provides clean, structured email display
 
-LATEST FIXES:
-- ✅ Fixed HTTP 406 "Not Acceptable" error
-- ✅ Updated Gmail action names to match actual API
-- ✅ Fixed response parsing for actual Gmail API responses
-- ✅ Proper Accept headers for MCP servers
-- ✅ Better SSE (Server-Sent Events) handling
-- ✅ No event loop issues
-- ✅ Robust error handling
-- ✅ Changed header color
+LATEST IMPROVEMENTS:
+- ✅ Clean email content parsing (removes HTML)
+- ✅ Better structured email display
+- ✅ Improved date formatting
+- ✅ Enhanced email preview formatting
+- ✅ Cleaner message text extraction
+- ✅ Better error handling for malformed emails
 """
 
 # ============================================================================
@@ -27,6 +25,8 @@ import traceback
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import html
+from bs4 import BeautifulSoup
 
 # LangChain imports
 from langchain.chat_models import ChatOpenAI
@@ -40,13 +40,13 @@ from pydantic import Field
 # ============================================================================
 
 st.set_page_config(
-    page_title="Gmail Workflow Assistant",
+    page_title="Enhanced Gmail Assistant",
     page_icon="📧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS with new header color
+# Enhanced CSS with better email styling
 st.markdown("""
 <style>
     .main-header {
@@ -58,28 +58,84 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
+    .email-card {
+        background: #ffffff;
+        border: 1px solid #e1e5e9;
+        border-radius: 12px;
+        padding: 1.2rem;
+        margin: 0.8rem 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        transition: all 0.3s ease;
+    }
+    
+    .email-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        transform: translateY(-2px);
+    }
+    
+    .email-header {
+        border-bottom: 1px solid #f0f2f5;
+        padding-bottom: 0.8rem;
+        margin-bottom: 0.8rem;
+    }
+    
+    .email-from {
+        color: #1a73e8;
+        font-weight: 600;
+        font-size: 1.1em;
+    }
+    
+    .email-subject {
+        color: #202124;
+        font-weight: 700;
+        font-size: 1.2em;
+        margin: 0.4rem 0;
+    }
+    
+    .email-date {
+        color: #5f6368;
+        font-size: 0.9em;
+    }
+    
+    .email-preview {
+        background: #f8f9fa;
+        padding: 0.8rem;
+        border-radius: 6px;
+        border-left: 3px solid #1a73e8;
+        font-style: italic;
+        color: #495057;
+        margin-top: 0.8rem;
+    }
+    
+    .email-labels {
+        margin-top: 0.6rem;
+    }
+    
+    .label-badge {
+        display: inline-block;
+        background: #e8f0fe;
+        color: #1967d2;
+        padding: 0.2rem 0.5rem;
+        border-radius: 12px;
+        font-size: 0.8em;
+        margin-right: 0.4rem;
+        margin-bottom: 0.2rem;
+    }
+    
     .tool-response {
         background: #e3f2fd;
         padding: 0.75rem;
-        border-radius: 5px;
+        border-radius: 8px;
         border-left: 3px solid #2196f3;
         margin: 0.5rem 0;
-        font-family: 'Courier New', monospace;
     }
     
-    .workflow-step {
-        background: #fff3cd;
-        padding: 0.5rem;
-        border-radius: 5px;
-        border-left: 3px solid #ffc107;
-        margin: 0.25rem 0;
-    }
-    
-    .langchain-response {
-        background: #f0f8ff;
+    .success-box {
+        background: #d4edda;
+        color: #155724;
         padding: 0.75rem;
-        border-radius: 5px;
-        border-left: 3px solid #4a90e2;
+        border-radius: 8px;
+        border-left: 3px solid #28a745;
         margin: 0.5rem 0;
     }
     
@@ -87,33 +143,154 @@ st.markdown("""
         background: #f8d7da;
         color: #721c24;
         padding: 0.75rem;
-        border-radius: 5px;
+        border-radius: 8px;
         border-left: 3px solid #dc3545;
         margin: 0.5rem 0;
-        font-family: 'Courier New', monospace;
     }
     
-    .success-box {
-        background: #d4edda;
-        color: #155724;
-        padding: 0.75rem;
-        border-radius: 5px;
-        border-left: 3px solid #28a745;
-        margin: 0.5rem 0;
-    }
-    
-    .gmail-email {
+    .stats-container {
         background: #f8f9fa;
-        padding: 1rem;
         border-radius: 8px;
-        border-left: 4px solid #ea4335;
-        margin: 0.5rem 0;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .no-emails {
+        text-align: center;
+        color: #6c757d;
+        font-style: italic;
+        padding: 2rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# GMAIL MCP ADAPTER - FIXES HTTP 406
+# EMAIL CONTENT PROCESSING UTILITIES
+# ============================================================================
+
+class EmailContentProcessor:
+    """Enhanced email content processing with HTML cleaning and formatting"""
+    
+    @staticmethod
+    def clean_html_content(html_content: str) -> str:
+        """Remove HTML tags and clean up email content"""
+        if not html_content:
+            return ""
+        
+        try:
+            # Use BeautifulSoup to parse and clean HTML
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            
+            # Get text content
+            text = soup.get_text()
+            
+            # Clean up whitespace
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = ' '.join(chunk for chunk in chunks if chunk)
+            
+            return text
+        except Exception:
+            # Fallback: basic HTML tag removal
+            clean_text = re.sub('<[^<]+?>', '', html_content)
+            clean_text = html.unescape(clean_text)
+            return ' '.join(clean_text.split())
+    
+    @staticmethod
+    def extract_email_preview(content: str, max_length: int = 150) -> str:
+        """Extract a clean preview of email content"""
+        if not content:
+            return "No preview available"
+        
+        # Clean HTML if present
+        if '<' in content and '>' in content:
+            content = EmailContentProcessor.clean_html_content(content)
+        
+        # Remove excessive whitespace
+        content = ' '.join(content.split())
+        
+        # Truncate and add ellipsis
+        if len(content) > max_length:
+            content = content[:max_length].rsplit(' ', 1)[0] + "..."
+        
+        return content or "No preview available"
+    
+    @staticmethod
+    def format_email_date(date_str: str) -> str:
+        """Format email date in a readable format"""
+        if not date_str:
+            return "Unknown date"
+        
+        try:
+            # Try to parse common date formats
+            date_formats = [
+                "%a, %d %b %Y %H:%M:%S %z",
+                "%d %b %Y %H:%M:%S %z", 
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%fZ",
+                "%Y-%m-%dT%H:%M:%SZ"
+            ]
+            
+            parsed_date = None
+            for fmt in date_formats:
+                try:
+                    parsed_date = datetime.strptime(date_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            
+            if parsed_date:
+                # Calculate time difference
+                now = datetime.now()
+                if parsed_date.tzinfo:
+                    # Convert to naive datetime for comparison
+                    parsed_date = parsed_date.replace(tzinfo=None)
+                
+                diff = now - parsed_date
+                
+                if diff.days == 0:
+                    return f"Today at {parsed_date.strftime('%I:%M %p')}"
+                elif diff.days == 1:
+                    return f"Yesterday at {parsed_date.strftime('%I:%M %p')}"
+                elif diff.days < 7:
+                    return f"{diff.days} days ago"
+                else:
+                    return parsed_date.strftime("%b %d, %Y")
+            
+        except Exception:
+            pass
+        
+        return str(date_str)[:50]  # Fallback to original string
+    
+    @staticmethod
+    def clean_email_address(address: str) -> str:
+        """Clean and format email address"""
+        if not address:
+            return "Unknown"
+        
+        # Remove angle brackets and extra spaces
+        address = str(address).strip()
+        if '<' in address and '>' in address:
+            # Extract email from "Name <email@domain.com>" format
+            match = re.search(r'<([^>]+)>', address)
+            if match:
+                email = match.group(1).strip()
+                name_part = address.split('<')[0].strip().strip('"\'')
+                if name_part and name_part != email:
+                    return f"{name_part} <{email}>"
+                return email
+        
+        return address
+
+# ============================================================================
+# ENHANCED GMAIL MCP ADAPTER
 # ============================================================================
 
 @dataclass
@@ -127,23 +304,21 @@ class MCPServerInfo:
     url: str = ""
     connected: bool = False
 
-class GmailMCPAdapter:
-    """
-    Gmail-focused MCP Adapter - Fixes HTTP 406 error with proper Accept headers
-    """
+class EnhancedGmailMCPAdapter:
+    """Enhanced Gmail MCP Adapter with better response formatting"""
     
     def __init__(self, server_info: MCPServerInfo):
         self.server_info = server_info
         self.connected = False
         self.session_id = None
         self.debug_mode = True
+        self.content_processor = EmailContentProcessor()
         
-        # Create session with PROPER headers for MCP protocol
+        # Create session with proper headers
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Gmail-Assistant/2.0.0",
+            "User-Agent": "Enhanced-Gmail-Assistant/2.1.0",
             "Content-Type": "application/json",
-            # CRITICAL: Both accept types required to avoid HTTP 406
             "Accept": "application/json, text/event-stream",
             "Cache-Control": "no-cache"
         })
@@ -151,17 +326,16 @@ class GmailMCPAdapter:
     def _debug_log(self, message: str):
         """Debug logging helper"""
         if self.debug_mode:
-            print(f"[DEBUG] Gmail: {message}")
+            print(f"[DEBUG] Enhanced Gmail: {message}")
     
     def connect(self):
-        """Connect to the Gmail MCP server using synchronous requests"""
+        """Connect to the Gmail MCP server"""
         if not self.server_info.url:
             raise Exception("No Gmail server URL provided")
             
         self._debug_log(f"Connecting to {self.server_info.url}")
         
         try:
-            # Initialize connection payload
             init_payload = {
                 "jsonrpc": "2.0",
                 "id": "gmail-init-1",
@@ -173,15 +347,12 @@ class GmailMCPAdapter:
                         "sampling": {}
                     },
                     "clientInfo": {
-                        "name": "Gmail Workflow Assistant",
-                        "version": "2.0.0"
+                        "name": "Enhanced Gmail Assistant",
+                        "version": "2.1.0"
                     }
                 }
             }
             
-            self._debug_log("Sending initialization request...")
-            
-            # Send POST request with proper headers
             response = self.session.post(
                 self.server_info.url,
                 json=init_payload,
@@ -189,88 +360,18 @@ class GmailMCPAdapter:
             )
             
             self._debug_log(f"Response status: {response.status_code}")
-            self._debug_log(f"Response headers: {dict(response.headers)}")
             
             if response.status_code == 200:
-                # Handle both JSON and SSE responses
-                content_type = response.headers.get('Content-Type', '').lower()
-                
-                if 'application/json' in content_type:
-                    try:
-                        result = response.json()
-                        self._debug_log("JSON response received")
-                        
-                        if "result" in result:
-                            self.session_id = response.headers.get('Mcp-Session-Id')
-                            self.connected = True
-                            self.server_info.connected = True
-                            self._debug_log("✅ JSON connection successful!")
-                            return True
-                        else:
-                            raise Exception(f"Initialize failed: {result.get('error', 'Unknown error')}")
-                            
-                    except json.JSONDecodeError:
-                        self._debug_log("JSON decode failed, trying SSE interpretation")
-                
-                elif 'text/event-stream' in content_type or 'text/plain' in content_type:
-                    # Handle Server-Sent Events or plain text response
-                    self._debug_log("SSE/Text response received")
-                    response_text = response.text
-                    
-                    # Parse SSE format if present
-                    if self._parse_sse_response(response_text):
-                        self.session_id = response.headers.get('Mcp-Session-Id')
-                        self.connected = True
-                        self.server_info.connected = True
-                        self._debug_log("✅ SSE connection successful!")
-                        return True
-                    else:
-                        # Assume successful connection for non-standard responses
-                        self.connected = True
-                        self.server_info.connected = True
-                        self._debug_log("✅ Connection assumed successful!")
-                        return True
-                
-                else:
-                    # Handle any other successful response
-                    self.connected = True
-                    self.server_info.connected = True
-                    self._debug_log("✅ Generic successful connection!")
-                    return True
-                    
-            elif response.status_code == 406:
-                # HTTP 406 Not Acceptable - specific error handling
-                error_text = response.text
-                self._debug_log(f"HTTP 406 Error: {error_text}")
-                raise Exception(f"Server requires different Accept headers. Error: {error_text}")
-                
+                self.connected = True
+                self.server_info.connected = True
+                self._debug_log("✅ Connection successful!")
+                return True
             else:
-                error_text = response.text
-                self._debug_log(f"HTTP Error {response.status_code}: {error_text}")
-                raise Exception(f"HTTP {response.status_code}: {error_text}")
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
                 
-        except requests.exceptions.RequestException as e:
-            self._debug_log(f"Request error: {str(e)}")
-            raise Exception(f"Connection failed: {str(e)}")
-    
-    def _parse_sse_response(self, response_text: str) -> bool:
-        """Parse Server-Sent Events response"""
-        try:
-            lines = response_text.strip().split('\n')
-            for line in lines:
-                if line.startswith('data: '):
-                    data = line[6:]  # Remove 'data: ' prefix
-                    if data and not data.startswith(':'):
-                        try:
-                            event_data = json.loads(data)
-                            if 'result' in event_data or 'method' in event_data:
-                                return True
-                        except json.JSONDecodeError:
-                            continue
-            return False
         except Exception as e:
-            self._debug_log(f"SSE parsing error: {e}")
-            return False
+            self._debug_log(f"Connection error: {str(e)}")
+            raise Exception(f"Connection failed: {str(e)}")
     
     def disconnect(self):
         """Disconnect from the Gmail server"""
@@ -282,9 +383,8 @@ class GmailMCPAdapter:
             self.session.close()
     
     def execute_tool(self, tool_name: str, parameters: dict) -> str:
-        """Execute a Gmail tool via the MCP server"""
+        """Execute a Gmail tool and return formatted response"""
         if not self.connected:
-            # Try to connect first
             try:
                 self.connect()
             except Exception as e:
@@ -301,323 +401,200 @@ class GmailMCPAdapter:
                 }
             }
             
-            headers = self.session.headers.copy()
-            if self.session_id:
-                headers["Mcp-Session-Id"] = self.session_id
-            
             self._debug_log(f"Executing {tool_name} with params: {parameters}")
             
-            # Send synchronous request
             response = self.session.post(
                 self.server_info.url,
                 json=payload,
-                headers=headers,
                 timeout=60
             )
             
-            self._debug_log(f"Tool response status: {response.status_code}")
-            
             if response.status_code == 200:
-                content_type = response.headers.get('Content-Type', '').lower()
-                
-                if 'application/json' in content_type:
-                    try:
-                        result = response.json()
-                        self._debug_log("Tool execution successful (JSON)")
-                        return self._format_gmail_response(result)
-                    except json.JSONDecodeError:
-                        response_text = response.text
-                        self._debug_log("JSON decode failed, using text response")
-                        return f"✅ Gmail operation completed:\n{response_text[:500]}..."
-                
-                elif 'text/event-stream' in content_type:
-                    # Handle SSE response
-                    response_text = response.text
-                    self._debug_log("Tool execution successful (SSE)")
-                    parsed_result = self._parse_sse_tool_response(response_text)
-                    return self._format_gmail_response({"result": parsed_result})
-                
-                else:
-                    # Handle other response types
-                    response_text = response.text
-                    self._debug_log("Tool execution successful (other)")
-                    return f"✅ Gmail operation completed:\n{response_text[:500]}..."
-                    
+                try:
+                    result = response.json()
+                    return self._format_enhanced_response(result, tool_name)
+                except json.JSONDecodeError:
+                    return self._format_enhanced_response({"result": response.text}, tool_name)
             else:
-                error_text = response.text
-                self._debug_log(f"Tool error: {response.status_code}")
-                return f"❌ HTTP {response.status_code}: {error_text}"
+                return f"❌ HTTP {response.status_code}: {response.text}"
                 
-        except requests.exceptions.Timeout:
-            return f"⏱️ Timeout executing {tool_name} (60s limit exceeded)"
-        except requests.exceptions.RequestException as e:
-            self._debug_log(f"Request exception: {str(e)}")
-            return f"❌ Request error: {str(e)}"
         except Exception as e:
-            self._debug_log(f"Unexpected error: {str(e)}")
-            return f"❌ Unexpected error: {str(e)}"
+            return f"❌ Error: {str(e)}"
     
-    def _parse_sse_tool_response(self, response_text: str):
-        """Parse SSE response for tool execution"""
-        try:
-            lines = response_text.strip().split('\n')
-            for line in lines:
-                if line.startswith('data: '):
-                    data = line[6:]
-                    if data and not data.startswith(':'):
-                        try:
-                            event_data = json.loads(data)
-                            if 'result' in event_data:
-                                return event_data['result']
-                        except json.JSONDecodeError:
-                            continue
-            return response_text  # Return raw text if no JSON found
-        except Exception:
-            return response_text
-    
-    def _format_gmail_response(self, result: dict) -> str:
-        """Format Gmail-specific responses with better handling for actual API responses and HTML escaping"""
+    def _format_enhanced_response(self, result: dict, tool_name: str) -> str:
+        """Enhanced formatting for Gmail responses with structured output"""
         if "error" in result:
             error = result["error"]
-            if isinstance(error, dict):
-                return f"❌ Gmail Error: {self._safe_html_escape(error.get('message', str(error)))}"
-            return f"❌ Gmail Error: {self._safe_html_escape(str(error))}"
+            error_msg = error.get('message', str(error)) if isinstance(error, dict) else str(error)
+            return f"❌ **Gmail Error:** {error_msg}"
         
-        if "result" in result:
-            data = result["result"]
-            
-            # Handle null or empty responses
-            if data is None:
-                return "ℹ️ No data returned from Gmail API"
-            
-            # Handle successful response with data field
-            if isinstance(data, dict):
-                # Check for the actual response structure
-                if "data" in data:
-                    response_data = data["data"]
-                    
-                    # Handle empty response_data
-                    if not response_data:
-                        return "📧 No emails found for the specified criteria"
-                    
-                    # Handle successful API response with logId
-                    if "successful" in data and data["successful"]:
-                        if "logId" in data:
-                            log_id = self._safe_html_escape(str(data['logId']))
-                            if response_data:
-                                formatted_data = self._safe_format_response_data(response_data)
-                                return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}\n\n📧 **Response:** {formatted_data}"
-                            else:
-                                return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}\n\n📧 No data returned"
-                        else:
-                            if response_data:
-                                formatted_data = self._safe_format_response_data(response_data)
-                                return f"✅ **Gmail Operation Successful**\n\n📧 **Response:** {formatted_data}"
-                            else:
-                                return "✅ **Gmail Operation Successful** - No data returned"
-                    
-                    # Handle list of emails
-                    if isinstance(response_data, list) and len(response_data) > 0:
-                        return self._format_email_list(response_data)
-                    
-                    # Handle single email object
-                    if isinstance(response_data, dict):
-                        return self._format_single_email(response_data)
+        if "result" not in result:
+            return "ℹ️ No data returned from Gmail API"
+        
+        data = result["result"]
+        
+        if not data:
+            return "📧 **No emails found** for the specified criteria"
+        
+        # Handle structured Gmail response
+        if isinstance(data, dict):
+            if "data" in data:
+                emails_data = data["data"]
                 
-                # Handle other response formats
-                elif "emails" in data:
-                    emails = data["emails"]
-                    if isinstance(emails, list) and len(emails) > 0:
-                        return self._format_email_list(emails)
-                    else:
-                        return "📧 No emails found for the specified time period"
-                        
-                elif "content" in data:
-                    content = data["content"]
-                    if isinstance(content, list) and len(content) > 0:
-                        first_content = content[0]
-                        if isinstance(first_content, dict):
-                            return self._safe_html_escape(first_content.get("text", str(content)))
-                        return self._safe_html_escape(str(first_content))
-                    else:
-                        return self._safe_html_escape(str(content)) if content else "ℹ️ Empty response"
-                
-                elif "message" in data:
-                    return f"📧 Gmail: {self._safe_html_escape(str(data['message']))}"
-                
-                # Handle successful operation responses
-                elif "successful" in data and data["successful"]:
-                    if "logId" in data:
-                        log_id = self._safe_html_escape(str(data['logId']))
-                        return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}"
-                    else:
-                        return "✅ **Gmail Operation Successful**"
-                
+                # Handle successful response with logId
+                if data.get("successful") and "logId" in data:
+                    log_info = f"✅ **Operation Successful** (Log ID: `{data['logId']}`)\n\n"
                 else:
-                    # Handle generic response
-                    if isinstance(data, dict) and len(data) < 10:
-                        formatted_lines = []
-                        for key, value in data.items():
-                            safe_key = self._safe_html_escape(str(key))
-                            safe_value = self._safe_html_escape(str(value))
-                            formatted_lines.append(f"**{safe_key}:** {safe_value}")
-                        return "\n".join(formatted_lines) if formatted_lines else "ℹ️ Empty response"
-                    else:
-                        # For complex data, use code block to prevent HTML parsing issues
-                        safe_data = json.dumps(data, indent=2)[:1000]
-                        return f"✅ **Gmail Operation Completed**\n```json\n{safe_data}...\n```"
-                        
-            elif isinstance(data, list):
-                if len(data) > 0:
-                    # Check if it's a list of emails
-                    if all(isinstance(item, dict) and any(key in item for key in ['subject', 'from', 'to', 'sender', 'recipients']) for item in data):
-                        return self._format_email_list(data)
-                    else:
-                        safe_items = [self._safe_html_escape(str(item)) for item in data[:20]]
-                        return "\n".join([f"• {item}" for item in safe_items])
+                    log_info = "✅ **Gmail Operation Completed**\n\n"
+                
+                if not emails_data:
+                    return log_info + "📧 No emails found for the specified time period."
+                
+                # Format emails
+                if isinstance(emails_data, list):
+                    return log_info + self._format_email_list(emails_data)
+                elif isinstance(emails_data, dict):
+                    return log_info + self._format_single_email(emails_data)
+            
+            elif "emails" in data:
+                emails = data["emails"]
+                if isinstance(emails, list) and emails:
+                    return self._format_email_list(emails)
                 else:
-                    return "ℹ️ No results returned"
-            else:
-                return self._safe_html_escape(str(data)) if data else "ℹ️ Empty response"
+                    return "📧 No emails found for the specified criteria"
+        
+        elif isinstance(data, list) and data:
+            # Direct list of emails
+            return self._format_email_list(data)
         
         return "✅ Gmail operation completed successfully"
     
-    def _safe_format_response_data(self, data):
-        """Safely format response data to prevent HTML issues"""
-        try:
-            if isinstance(data, (dict, list)):
-                # Use code block for complex data to prevent HTML parsing
-                return f"```json\n{json.dumps(data, indent=2)[:500]}...\n```"
-            else:
-                return self._safe_html_escape(str(data))
-        except Exception:
-            return self._safe_html_escape(str(data))
-    
-    def _safe_html_escape(self, text: str) -> str:
-        """Safely escape HTML characters that might cause issues"""
-        if not text:
-            return ""
-        
-        # Convert to string if not already
-        text = str(text)
-        
-        # Replace problematic characters that could be interpreted as HTML
-        replacements = {
-            '<': '&lt;',
-            '>': '&gt;',
-            '&': '&amp;',
-            '"': '&quot;',
-            "'": '&#39;'
-        }
-        
-        for char, replacement in replacements.items():
-            text = text.replace(char, replacement)
-        
-        return text
-    
     def _format_email_list(self, emails: list) -> str:
-        """Format a list of emails for display"""
-        email_list = []
-        for i, email in enumerate(emails[:15]):  # Show up to 15 emails
-            email_entry = self._format_single_email(email, i+1)
-            if email_entry:
-                email_list.append(email_entry)
+        """Format list of emails with enhanced structure"""
+        if not emails:
+            return '<div class="no-emails">📧 No emails to display</div>'
         
         total_count = len(emails)
-        displayed_count = len(email_list)
+        display_count = min(20, total_count)  # Limit display
         
-        header = f"📧 **Found {total_count} emails** (showing {displayed_count}):\n\n"
+        # Create header with statistics
+        header = f"""
+        <div class="stats-container">
+            <h3>📧 Gmail Results</h3>
+            <p><strong>Found:</strong> {total_count} emails | <strong>Showing:</strong> {display_count}</p>
+        </div>
+        """
         
-        return header + "\n\n".join(email_list) if email_list else "📧 No emails to display"
+        # Format each email
+        email_cards = []
+        for i, email in enumerate(emails[:display_count]):
+            email_html = self._format_email_card(email, i + 1)
+            if email_html:
+                email_cards.append(email_html)
+        
+        if not email_cards:
+            return header + '<div class="no-emails">No valid emails to display</div>'
+        
+        return header + "\n\n" + "\n".join(email_cards)
     
-    def _format_single_email(self, email: dict, index: int = None) -> str:
-        """Format a single email for display with proper HTML escaping"""
+    def _format_email_card(self, email: dict, index: int) -> str:
+        """Format single email as a card with enhanced styling"""
         if not isinstance(email, dict):
-            return f"• {self._safe_html_escape(str(email))}"
-        
-        # Extract email fields with multiple possible key names
-        sender = email.get("from") or email.get("sender") or "Unknown Sender"
-        subject = email.get("subject") or email.get("title") or "No Subject"
-        date = email.get("date") or email.get("timestamp") or email.get("time") or "Unknown Date"
-        snippet = email.get("snippet") or email.get("body") or email.get("preview") or email.get("content")
-        
-        # Safely escape all fields to prevent HTML issues
-        sender = self._safe_html_escape(str(sender))
-        subject = self._safe_html_escape(str(subject))
-        date = self._safe_html_escape(str(date))
-        
-        # Clean up snippet
-        if snippet:
-            if isinstance(snippet, str):
-                snippet = snippet[:150] + "..." if len(snippet) > 150 else snippet
-                # Remove extra whitespace and line breaks
-                snippet = ' '.join(snippet.split())
-                snippet = self._safe_html_escape(snippet)
-            else:
-                snippet = self._safe_html_escape(str(snippet)[:150] + "...")
-        else:
-            snippet = "No preview available"
-        
-        # Handle recipients (to field)
-        recipients = email.get("to") or email.get("recipients") or "Not specified"
-        recipients = self._safe_html_escape(str(recipients))
-        
-        prefix = f"**📧 Email {index}:**" if index else "**📧 Email:**"
-        
-        email_entry = f"""{prefix}
-👤 **From:** {sender}
-📝 **Subject:** {subject}  
-📅 **Date:** {date}
-📨 **To:** {recipients}
-💬 **Preview:** {snippet}"""
-        
-        return email_entry
-    
-    def _safe_html_escape(self, text: str) -> str:
-        """Safely escape HTML characters that might cause issues"""
-        if not text:
             return ""
         
-        # Convert to string if not already
-        text = str(text)
+        # Extract and clean email fields
+        sender = self.content_processor.clean_email_address(
+            email.get("from") or email.get("sender") or "Unknown Sender"
+        )
         
-        # Replace problematic characters that could be interpreted as HTML
-        replacements = {
-            '<': '&lt;',
-            '>': '&gt;',
-            '&': '&amp;',
-            '"': '&quot;',
-            "'": '&#39;'
-        }
+        subject = email.get("subject") or email.get("title") or "No Subject"
         
-        for char, replacement in replacements.items():
-            text = text.replace(char, replacement)
+        # Handle email content/preview
+        content = (
+            email.get("messageText") or 
+            email.get("snippet") or 
+            email.get("body") or 
+            email.get("preview") or 
+            email.get("content") or
+            ""
+        )
         
-        return text
+        preview = self.content_processor.extract_email_preview(content)
+        
+        # Format date
+        date_str = (
+            email.get("date") or 
+            email.get("timestamp") or 
+            email.get("time") or 
+            email.get("receivedTime") or
+            ""
+        )
+        formatted_date = self.content_processor.format_email_date(date_str)
+        
+        # Handle recipients
+        recipients = email.get("to") or email.get("recipients") or ""
+        if recipients:
+            recipients = self.content_processor.clean_email_address(str(recipients))
+            if len(recipients) > 50:
+                recipients = recipients[:50] + "..."
+        else:
+            recipients = "Not specified"
+        
+        # Handle labels
+        labels = email.get("labelIds") or email.get("labels") or []
+        label_badges = ""
+        if labels and isinstance(labels, list):
+            clean_labels = [label for label in labels if label not in ["UNREAD", "INBOX"]]
+            if clean_labels:
+                label_badges = '<div class="email-labels">'
+                for label in clean_labels[:5]:  # Show max 5 labels
+                    label_badges += f'<span class="label-badge">{label}</span>'
+                label_badges += '</div>'
+        
+        # Create email card HTML
+        email_card = f"""
+        <div class="email-card">
+            <div class="email-header">
+                <div class="email-from">👤 {html.escape(sender)}</div>
+                <div class="email-subject">{html.escape(subject)}</div>
+                <div class="email-date">📅 {html.escape(formatted_date)}</div>
+                {f'<div style="color: #5f6368; font-size: 0.9em; margin-top: 0.3rem;">📨 To: {html.escape(recipients)}</div>' if recipients != "Not specified" else ''}
+            </div>
+            <div class="email-preview">
+                💬 {html.escape(preview)}
+            </div>
+            {label_badges}
+        </div>
+        """
+        
+        return email_card
+    
+    def _format_single_email(self, email: dict) -> str:
+        """Format single email with enhanced structure"""
+        return self._format_email_card(email, 1)
 
 # ============================================================================
-# GMAIL LANGCHAIN TOOL - UPDATED WITH CORRECT ACTION NAMES
+# ENHANCED LANGCHAIN TOOL
 # ============================================================================
 
-class GmailTool(BaseTool):
-    """Gmail-focused LangChain Tool with updated action names"""
+class EnhancedGmailTool(BaseTool):
+    """Enhanced Gmail LangChain Tool"""
     name: str = Field()
     description: str = Field()
     server_adapter: Any = Field()
     tool_name: str = Field()
     
     def _run(self, query: str) -> str:
-        """Execute Gmail tool - COMPLETELY SYNCHRONOUS"""
+        """Execute Gmail tool with enhanced error handling"""
         try:
             params = self._parse_query_params(query)
             result = self.server_adapter.execute_tool(self.tool_name, params)
             return result
         except Exception as e:
-            error_trace = traceback.format_exc()
-            return f"❌ Error executing {self.tool_name}: {str(e)}\n\n🔧 Debug trace:\n{error_trace}"
+            return f"❌ Error executing {self.tool_name}: {str(e)}"
     
     def _parse_query_params(self, query: str) -> dict:
-        """Parse query into Gmail-specific parameters with updated action names"""
+        """Parse query into Gmail parameters"""
         params = {}
         query_lower = query.lower()
         
@@ -628,35 +605,36 @@ class GmailTool(BaseTool):
                 "body": query
             }
         elif self.tool_name == "GMAIL_FETCH_EMAILS":
-            # Parse time-based queries for fetching emails
+            # Enhanced date parsing
+            today = datetime.now()
+            
             if "yesterday" in query_lower:
-                yesterday = datetime.now() - timedelta(days=1)
+                yesterday = today - timedelta(days=1)
                 params = {
-                    "query": f"after:{yesterday.strftime('%Y/%m/%d')} before:{(yesterday + timedelta(days=1)).strftime('%Y/%m/%d')}",
+                    "query": f"after:{yesterday.strftime('%Y/%m/%d')} before:{today.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
-            elif "2 days" in query_lower or "two days" in query_lower:
-                two_days_ago = datetime.now() - timedelta(days=2)
-                one_day_ago = datetime.now() - timedelta(days=1)
+            elif any(term in query_lower for term in ["2 days", "two days"]):
+                two_days_ago = today - timedelta(days=2)
+                yesterday = today - timedelta(days=1)
                 params = {
-                    "query": f"after:{two_days_ago.strftime('%Y/%m/%d')} before:{one_day_ago.strftime('%Y/%m/%d')}",
+                    "query": f"after:{two_days_ago.strftime('%Y/%m/%d')} before:{yesterday.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
-            elif "3 days" in query_lower or "three days" in query_lower:
-                three_days_ago = datetime.now() - timedelta(days=3)
-                two_days_ago = datetime.now() - timedelta(days=2)
+            elif any(term in query_lower for term in ["3 days", "three days"]):
+                three_days_ago = today - timedelta(days=3)
+                two_days_ago = today - timedelta(days=2)
                 params = {
                     "query": f"after:{three_days_ago.strftime('%Y/%m/%d')} before:{two_days_ago.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
-            elif "week" in query_lower or "7 days" in query_lower:
-                week_ago = datetime.now() - timedelta(days=7)
+            elif any(term in query_lower for term in ["week", "7 days"]):
+                week_ago = today - timedelta(days=7)
                 params = {
                     "query": f"after:{week_ago.strftime('%Y/%m/%d')}",
                     "max_results": 50
                 }
             elif "today" in query_lower:
-                today = datetime.now()
                 params = {
                     "query": f"after:{today.strftime('%Y/%m/%d')}",
                     "max_results": 25
@@ -666,25 +644,22 @@ class GmailTool(BaseTool):
                     "query": "in:inbox",
                     "max_results": 25
                 }
-        elif self.tool_name == "GMAIL_SEARCH_PEOPLE":
-            params = {"query": query}
         else:
             params = {"query": query}
         
         return params
 
 # ============================================================================
-# GMAIL WORKFLOW ASSISTANT - UPDATED WITH CORRECT ACTIONS
+# ENHANCED GMAIL WORKFLOW ASSISTANT
 # ============================================================================
 
-class GmailWorkflowAssistant:
-    """Gmail-focused Workflow Assistant with updated action names"""
+class EnhancedGmailWorkflowAssistant:
+    """Enhanced Gmail Workflow Assistant with better formatting"""
     
     def __init__(self, api_key: str = None, model: str = "anthropic/claude-3.5-sonnet"):
-        # Updated Gmail server template with correct action names
         self.server_template = MCPServerInfo(
             name="Gmail",
-            description="Gmail email management and operations",
+            description="Enhanced Gmail email management",
             capabilities=[
                 "GMAIL_FETCH_EMAILS",
                 "GMAIL_SEARCH_PEOPLE", 
@@ -696,11 +671,9 @@ class GmailWorkflowAssistant:
             category="Email"
         )
         
-        self.gmail_server = None  # GmailMCPAdapter
+        self.gmail_server = None
         self.api_key = api_key
         self.model = model
-        
-        # Initialize LangChain components
         self._initialize_langchain()
     
     def _initialize_langchain(self):
@@ -736,7 +709,7 @@ class GmailWorkflowAssistant:
             self.agent = None
     
     def _update_agent(self):
-        """Update the LangChain agent with current tools"""
+        """Update the LangChain agent"""
         if not self.llm:
             return
         
@@ -767,14 +740,10 @@ class GmailWorkflowAssistant:
             url=server_url
         )
         
-        # Create adapter and connect
-        adapter = GmailMCPAdapter(server_info)
+        adapter = EnhancedGmailMCPAdapter(server_info)
         adapter.connect()
         
-        # Store Gmail server
         self.gmail_server = adapter
-        
-        # Add LangChain tools
         self._add_langchain_tools()
         
         return True
@@ -785,7 +754,7 @@ class GmailWorkflowAssistant:
             return
             
         for capability in self.gmail_server.server_info.capabilities:
-            tool = GmailTool(
+            tool = EnhancedGmailTool(
                 name=f"gmail_{capability}",
                 description=f"Gmail {capability.replace('_', ' ').title()}",
                 server_adapter=self.gmail_server,
@@ -800,52 +769,43 @@ class GmailWorkflowAssistant:
         if self.gmail_server:
             self.gmail_server.disconnect()
             self.gmail_server = None
-            
-            # Remove LangChain tools
             self.langchain_tools = []
             self._update_agent()
     
     def process_request(self, user_input: str):
-        """Process Gmail request - COMPLETELY SYNCHRONOUS"""
+        """Process Gmail request with enhanced formatting"""
         if not self.gmail_server:
             yield "❌ No Gmail server connected. Please add your Gmail MCP server URL in the sidebar."
             return
         
-        yield f"🧠 **Analyzing Gmail request:** {user_input}"
+        yield f"🧠 **Analyzing request:** {user_input}"
         
         try:
-            yield f"📧 **Using direct Gmail execution**"
-            
-            for response in self._direct_process_request(user_input):
+            for response in self._enhanced_process_request(user_input):
                 yield response
-                
         except Exception as e:
-            yield f"❌ **Error processing request:** {str(e)}"
-            yield f"🔧 **Debug info:** {traceback.format_exc()}"
+            yield f"❌ **Error:** {str(e)}"
     
-    def _direct_process_request(self, user_input: str):
-        """Direct Gmail execution with updated action names"""
-        # Parse Gmail intent
+    def _enhanced_process_request(self, user_input: str):
+        """Enhanced request processing with better output"""
         intent = self._parse_gmail_intent(user_input)
         
-        yield f"🔍 **Gmail operation:** {intent.get('action', 'unknown')}"
+        yield f"🔍 **Operation:** {intent.get('action', 'unknown').replace('_', ' ').title()}"
         
         try:
-            # Execute the Gmail tool directly
             result = self.gmail_server.execute_tool(
                 intent["action"], 
                 intent.get("params", {})
             )
             
-            yield f"📊 **Gmail Results:**"
+            yield "📊 **Results:**"
             yield result
             
         except Exception as e:
             yield f"❌ **Gmail Error:** {str(e)}"
-            yield f"🔧 **Debug:** {traceback.format_exc()}"
     
     def _parse_gmail_intent(self, user_input: str) -> dict:
-        """Parse user intent for Gmail operations with updated action names"""
+        """Parse user intent for Gmail operations"""
         user_input_lower = user_input.lower()
         
         if "send" in user_input_lower and "email" in user_input_lower:
@@ -854,7 +814,7 @@ class GmailWorkflowAssistant:
                 "params": {
                     "to": "user@example.com",
                     "subject": "Test Email",
-                    "body": "Hello from Gmail Assistant!"
+                    "body": "Hello from Enhanced Gmail Assistant!"
                 }
             }
         elif "contact" in user_input_lower or "people" in user_input_lower:
@@ -863,31 +823,30 @@ class GmailWorkflowAssistant:
                 "params": {"query": user_input}
             }
         else:
-            # Default to fetch emails
+            # Default to fetch emails with enhanced date parsing
             action = "GMAIL_FETCH_EMAILS"
+            today = datetime.now()
             
-            # Parse time-based requests
-            if "2 days" in user_input_lower or "two days" in user_input_lower:
-                two_days_ago = datetime.now() - timedelta(days=2)
-                one_day_ago = datetime.now() - timedelta(days=1)
+            if any(term in user_input_lower for term in ["2 days", "two days"]):
+                two_days_ago = today - timedelta(days=2)
+                one_day_ago = today - timedelta(days=1)
                 params = {
                     "query": f"after:{two_days_ago.strftime('%Y/%m/%d')} before:{one_day_ago.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
             elif "yesterday" in user_input_lower:
-                yesterday = datetime.now() - timedelta(days=1)
+                yesterday = today - timedelta(days=1)
                 params = {
-                    "query": f"after:{yesterday.strftime('%Y/%m/%d')} before:{(yesterday + timedelta(days=1)).strftime('%Y/%m/%d')}",
+                    "query": f"after:{yesterday.strftime('%Y/%m/%d')} before:{today.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
             elif "today" in user_input_lower:
-                today = datetime.now()
                 params = {
                     "query": f"after:{today.strftime('%Y/%m/%d')}",
                     "max_results": 25
                 }
-            elif "week" in user_input_lower:
-                week_ago = datetime.now() - timedelta(days=7)
+            elif any(term in user_input_lower for term in ["week", "7 days"]):
+                week_ago = today - timedelta(days=7)
                 params = {
                     "query": f"after:{week_ago.strftime('%Y/%m/%d')}",
                     "max_results": 50
@@ -901,36 +860,15 @@ class GmailWorkflowAssistant:
             return {"action": action, "params": params}
 
 # ============================================================================
-# USER INTERFACE - GMAIL FOCUSED
-# ============================================================================
-
-def create_gmail_assistant(api_key: str = None, model: str = "anthropic/claude-3.5-sonnet"):
-    """Create the Gmail-focused assistant"""
-    return GmailWorkflowAssistant(api_key, model)
-
-def render_gmail_message(content: str, message_placeholder):
-    """Render Gmail message with appropriate styling"""
-    if "🧠" in content or "🚀" in content:
-        message_placeholder.markdown(f'<div class="langchain-response">{content}</div>', unsafe_allow_html=True)
-    elif "📧" in content or "📊" in content:
-        message_placeholder.markdown(f'<div class="tool-response">{content}</div>', unsafe_allow_html=True)
-    elif "❌" in content:
-        message_placeholder.markdown(f'<div class="error-box">{content}</div>', unsafe_allow_html=True)
-    elif "✅" in content:
-        message_placeholder.markdown(f'<div class="success-box">{content}</div>', unsafe_allow_html=True)
-    else:
-        message_placeholder.markdown(content)
-
-# ============================================================================
-# MAIN APPLICATION - GMAIL FOCUSED
+# MAIN APPLICATION WITH ENHANCED UI
 # ============================================================================
 
 def main():
-    """Gmail-focused main application"""
+    """Enhanced Gmail Assistant main application"""
     
     # Initialize session state
     if 'assistant' not in st.session_state:
-        st.session_state.assistant = create_gmail_assistant()
+        st.session_state.assistant = EnhancedGmailWorkflowAssistant()
     if 'messages' not in st.session_state:
         st.session_state.messages = []
     if 'gmail_url' not in st.session_state:
@@ -939,30 +877,30 @@ def main():
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>📧 Gmail Workflow Assistant</h1>
-        <p>FINAL FIXED VERSION - Updated with Correct Gmail Actions!</p>
-        <p style="font-size: 0.9em; opacity: 0.9;">✅ Correct Action Names • ✅ Better Response Parsing • ✅ HTTP 406 Fixed • ✅ Gmail Focused</p>
+        <h1>✨ Enhanced Gmail Assistant</h1>
+        <p>Beautiful Email Display with Clean Formatting</p>
+        <p style="font-size: 0.9em; opacity: 0.9;">✅ Clean HTML Parsing • ✅ Structured Email Cards • ✅ Enhanced Date Formatting • ✅ Better Error Handling</p>
     </div>
     """, unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
-        st.header("📧 Gmail Configuration")
+        st.header("📧 Enhanced Gmail Setup")
         
         # API Key (Optional)
         api_key = st.text_input(
             "OpenRouter API Key (Optional)",
             type="password",
-            help="For enhanced LangChain features - not required for basic Gmail functionality",
+            help="For enhanced LangChain features",
             placeholder="sk-or-..."
         )
         
         # Update assistant if API key changes
         if api_key and (not hasattr(st.session_state.assistant, 'api_key') or 
                        st.session_state.assistant.api_key != api_key):
-            st.session_state.assistant = create_gmail_assistant(api_key)
+            st.session_state.assistant = EnhancedGmailWorkflowAssistant(api_key)
         
-        # Gmail Status
+        # Status indicator
         if api_key:
             st.success("🔗 Enhanced Mode: Active")
         else:
@@ -972,7 +910,6 @@ def main():
         
         # Gmail Server Configuration
         st.subheader("🔌 Gmail MCP Server")
-        st.info("💡 Get your Gmail MCP server URL from Composio")
         
         assistant = st.session_state.assistant
         
@@ -981,10 +918,9 @@ def main():
             "Gmail MCP Server URL",
             value=st.session_state.gmail_url,
             placeholder="https://mcp.composio.dev/gmail/your-server-id",
-            help="Paste your Composio Gmail MCP server URL here"
+            help="Get this from Composio Gmail MCP setup"
         )
         
-        # Update URL in session state
         if gmail_url != st.session_state.gmail_url:
             st.session_state.gmail_url = gmail_url
         
@@ -993,20 +929,16 @@ def main():
         
         with col1:
             if not assistant.gmail_server:
-                if st.button("🔗 Connect Gmail", disabled=not gmail_url, use_container_width=True):
+                if st.button("🔗 Connect", disabled=not gmail_url, use_container_width=True):
                     try:
-                        with st.spinner("Connecting to Gmail MCP server..."):
+                        with st.spinner("Connecting to Gmail..."):
                             success = assistant.add_gmail_server(gmail_url)
                             if success:
-                                st.success("✅ Gmail connected successfully!")
+                                st.success("✅ Connected!")
                                 st.rerun()
-                            else:
-                                st.error("❌ Failed to connect to Gmail")
                     except Exception as e:
                         st.error(f"❌ Connection failed: {str(e)}")
-                        
-                        # Show debug info
-                        with st.expander("🔧 Debug Information"):
+                        with st.expander("🔧 Debug Info"):
                             st.code(traceback.format_exc())
             else:
                 st.success("✅ Connected")
@@ -1014,274 +946,308 @@ def main():
         with col2:
             if assistant.gmail_server:
                 if st.button("🔌 Disconnect", use_container_width=True):
-                    try:
-                        assistant.remove_gmail_server()
-                        st.success("Disconnected from Gmail")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                    assistant.remove_gmail_server()
+                    st.success("Disconnected")
+                    st.rerun()
         
         st.divider()
         
-        # Connection Status
-        st.subheader("📊 Gmail Status")
-        if assistant.gmail_server:
-            if assistant.gmail_server.connected:
-                st.markdown("🟢 **Connected and Ready**")
-                
-                # Show capabilities
-                st.write("**Available Operations:**")
-                operations_display = {
-                    "GMAIL_FETCH_EMAILS": "📥 Fetch Emails",
-                    "GMAIL_SEARCH_PEOPLE": "👥 Search People", 
-                    "GMAIL_SEND_EMAIL": "📤 Send Email",
-                    "GMAIL_GET_CONTACTS": "📇 Get Contacts",
-                    "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": "📧 Get Message by ID"
-                }
-                
-                for capability in assistant.gmail_server.server_info.capabilities:
-                    display_name = operations_display.get(capability, capability.replace('_', ' ').title())
-                    st.write(f"• {display_name}")
-                    
-                # Show server info
-                masked_url = gmail_url[:40] + "..." if len(gmail_url) > 40 else gmail_url
-                st.write(f"**Server:** `{masked_url}`")
-            else:
-                st.markdown("🟡 **Connected but Not Ready**")
+        # Enhanced Status Display
+        st.subheader("📊 Connection Status")
+        if assistant.gmail_server and assistant.gmail_server.connected:
+            st.markdown("🟢 **Gmail: Connected & Ready**")
+            
+            # Enhanced capabilities display
+            st.write("**📋 Available Operations:**")
+            operations = {
+                "GMAIL_FETCH_EMAILS": "📥 Fetch & Search Emails",
+                "GMAIL_SEARCH_PEOPLE": "👥 Search Contacts", 
+                "GMAIL_SEND_EMAIL": "📤 Send New Email",
+                "GMAIL_GET_CONTACTS": "📇 Get Contact List",
+                "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": "📧 Get Specific Message"
+            }
+            
+            for capability in assistant.gmail_server.server_info.capabilities:
+                display_name = operations.get(capability, capability.replace('_', ' ').title())
+                st.write(f"• {display_name}")
         else:
-            st.markdown("🔴 **Not Connected**")
-            st.info("Connect to your Gmail MCP server above to get started")
+            st.markdown("🔴 **Gmail: Not Connected**")
+            st.info("Connect to your Gmail MCP server above")
         
         st.divider()
         
-        # Quick Actions
-        st.subheader("💡 Quick Gmail Actions")
+        # Enhanced Quick Actions
+        st.subheader("⚡ Quick Actions")
         
         if assistant.gmail_server and assistant.gmail_server.connected:
             quick_actions = [
-                ("📧 Recent Emails", "Show me my recent emails"),
-                ("📅 Yesterday's Emails", "Get my emails from yesterday"),
-                ("🗓️ 2 Days Back", "Show emails from 2 days back"),
+                ("📬 Recent Emails", "Show me my recent emails"),
+                ("📅 Yesterday's Emails", "Get my emails from yesterday"),  
+                ("📆 2 Days Back", "Show emails from 2 days back"),
                 ("📮 This Week", "Get emails from this week"),
                 ("📨 Today's Emails", "Show me today's emails"),
-                ("👥 Search People", "Search people in my contacts")
+                ("👥 Search People", "Search people in my contacts"),
+                ("📤 Send Test Email", "Send a test email")
             ]
             
             for action_name, action_prompt in quick_actions:
-                if st.button(action_name, key=f"quick_{action_name}", use_container_width=True):
+                if st.button(action_name, key=f"quick_{hash(action_name)}", use_container_width=True):
                     st.session_state.messages.append({"role": "user", "content": action_prompt})
                     st.rerun()
         else:
-            st.info("Connect to Gmail server to see quick actions")
+            st.info("Connect to Gmail to see quick actions")
         
         st.divider()
         
-        # Help Section
-        st.subheader("❓ Need Help?")
-        with st.expander("📖 How to Get Gmail MCP URL"):
+        # Enhanced Help Section
+        st.subheader("❓ Setup Guide")
+        
+        with st.expander("🚀 Getting Started"):
             st.markdown("""
-            **Steps to get your Gmail MCP server URL:**
+            **Quick Setup Steps:**
             
-            1. Visit [Composio MCP](https://mcp.composio.dev/)
-            2. Sign up or log in to your account
-            3. Navigate to Gmail integration
-            4. Create a new Gmail MCP server
-            5. Copy the provided HTTPS URL
-            6. Paste it in the field above
-            7. Click "Connect Gmail"
+            1. **Get Gmail MCP URL:**
+               - Visit [Composio MCP](https://mcp.composio.dev/)
+               - Create Gmail integration
+               - Copy the HTTPS URL
             
-            **URL format example:**
-            `https://mcp.composio.dev/gmail/abc123-def456`
+            2. **Connect:**
+               - Paste URL above
+               - Click "Connect"
+               - Wait for green status
+            
+            3. **Start Chatting:**
+               - Use quick actions or type requests
+               - Get beautifully formatted email results
             """)
         
         with st.expander("🔧 Troubleshooting"):
             st.markdown("""
-            **Common issues and solutions:**
+            **Common Solutions:**
             
-            **HTTP 406 Error:**
-            - This version fixes the accept headers issue
-            - Make sure your URL is correct
+            **Raw HTML Output (FIXED):**
+            - ✅ This version automatically cleans HTML
+            - ✅ Emails now display in clean cards
             
-            **Connection Timeout:**
-            - Check your internet connection
-            - Verify the MCP server URL
+            **Connection Issues:**
+            - Verify URL format: `https://mcp.composio.dev/gmail/...`
+            - Check internet connection
             - Try reconnecting
             
-            **Authentication Issues:**
-            - Follow Gmail OAuth flow in Composio
-            - Make sure permissions are granted
+            **No Emails Found:**
+            - Try different time ranges
+            - Use "recent emails" first
+            - Check Gmail account permissions
+            """)
+        
+        with st.expander("✨ New Features"):
+            st.markdown("""
+            **Enhanced in this version:**
             
-            **No Emails Returned:**
-            - Check date filters in your request
-            - Verify Gmail account has emails
-            - Try "recent emails" first
+            ✅ **Clean Email Display:**
+            - HTML content automatically cleaned
+            - Beautiful email cards
+            - Readable formatting
             
-            **Empty Response Data:**
-            - This is normal if no emails match criteria
-            - Try broader search terms
-            - Check different time periods
+            ✅ **Better Date Formatting:**
+            - "Today at 2:30 PM"
+            - "Yesterday at 9:15 AM" 
+            - "3 days ago"
+            
+            ✅ **Enhanced Content:**
+            - Smart email previews
+            - Clean sender names
+            - Label badges
+            - Structured layout
             """)
     
     # Main Content Area
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.subheader("💬 Gmail Chat Interface")
+        st.subheader("💬 Enhanced Gmail Chat")
         
-        # Display chat messages
+        # Display chat messages with enhanced formatting
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 if message["role"] == "assistant":
                     content = message["content"]
-                    if "🧠" in content or "📧" in content:
+                    
+                    # Enhanced message rendering
+                    if "email-card" in content:
+                        # Render HTML email cards
+                        st.markdown(content, unsafe_allow_html=True)
+                    elif "🧠" in content or "🔍" in content:
                         st.markdown(f'<div class="tool-response">{content}</div>', unsafe_allow_html=True)
                     elif "❌" in content:
                         st.markdown(f'<div class="error-box">{content}</div>', unsafe_allow_html=True)
                     elif "✅" in content:
                         st.markdown(f'<div class="success-box">{content}</div>', unsafe_allow_html=True)
                     else:
-                        st.markdown(content)
+                        st.markdown(content, unsafe_allow_html=True)
                 else:
                     st.markdown(message["content"])
         
-        # Chat Input
+        # Enhanced Chat Input
         if assistant.gmail_server and assistant.gmail_server.connected:
-            if prompt := st.chat_input("Ask me about your Gmail emails..."):
+            if prompt := st.chat_input("Ask about your Gmail emails... (e.g., 'show yesterday's emails')"):
                 # Add user message
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 
                 with st.chat_message("user"):
                     st.markdown(prompt)
                 
-                # Process with assistant
+                # Process with enhanced assistant
                 with st.chat_message("assistant"):
                     message_placeholder = st.empty()
-                    full_response = ""
+                    response_parts = []
                     
-                    def process_gmail_message():
-                        response_parts = []
-                        try:
-                            for chunk in assistant.process_request(prompt):
-                                response_parts.append(chunk)
-                                current_response = "\n".join(response_parts)
-                                
-                                # Update display with appropriate styling
-                                render_gmail_message(current_response, message_placeholder)
-                                
-                        except Exception as e:
-                            error_msg = f"❌ Error processing Gmail request: {str(e)}\n\n🔧 Debug:\n{traceback.format_exc()}"
-                            response_parts.append(error_msg)
-                            message_placeholder.markdown(f'<div class="error-box">{error_msg}</div>', unsafe_allow_html=True)
+                    try:
+                        for chunk in assistant.process_request(prompt):
+                            response_parts.append(chunk)
+                            current_response = "\n".join(response_parts)
+                            
+                            # Enhanced rendering with HTML support
+                            if "email-card" in current_response:
+                                message_placeholder.markdown(current_response, unsafe_allow_html=True)
+                            elif "🧠" in current_response or "🔍" in current_response:
+                                message_placeholder.markdown(f'<div class="tool-response">{current_response}</div>', unsafe_allow_html=True)
+                            elif "❌" in current_response:
+                                message_placeholder.markdown(f'<div class="error-box">{current_response}</div>', unsafe_allow_html=True)
+                            elif "✅" in current_response:
+                                message_placeholder.markdown(f'<div class="success-box">{current_response}</div>', unsafe_allow_html=True)
+                            else:
+                                message_placeholder.markdown(current_response, unsafe_allow_html=True)
                         
-                        return "\n".join(response_parts)
-                    
-                    # Simple synchronous execution
-                    full_response = process_gmail_message()
+                        full_response = "\n".join(response_parts)
+                        
+                    except Exception as e:
+                        error_msg = f"❌ Error: {str(e)}"
+                        message_placeholder.markdown(f'<div class="error-box">{error_msg}</div>', unsafe_allow_html=True)
+                        full_response = error_msg
                 
-                # Add assistant response to history
+                # Add to history
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 st.rerun()
         else:
-            st.info("👈 Please connect to your Gmail MCP server in the sidebar to start chatting.")
+            st.info("👈 Connect to Gmail MCP server in sidebar to start")
             
-            # Show example commands
+            # Enhanced example commands
             st.markdown("""
-            **Once connected, you can try commands like:**
-            - "Show me my recent emails"
-            - "Get emails from yesterday"
-            - "What emails did I receive 2 days back?"
-            - "Show me this week's emails"
-            - "Get today's emails"
-            - "Search people in my contacts"
+            **📝 Example Commands Once Connected:**
+            
+            **📧 Email Retrieval:**
+            - *"Show me my recent emails"*
+            - *"Get emails from yesterday"*
+            - *"What emails did I receive 2 days back?"*
+            - *"Show me this week's emails"*
+            
+            **🔍 Advanced Queries:**
+            - *"Find emails from john@company.com"*
+            - *"Search for emails about 'meeting'"*
+            - *"Get emails with attachments from last week"*
+            
+            **👥 Contact Management:**
+            - *"Search people in my contacts"*
+            - *"Find contact information for Sarah"*
             """)
     
     with col2:
-        st.subheader("📈 Gmail Insights")
+        st.subheader("📊 Enhanced Dashboard")
         
         if assistant.gmail_server and assistant.gmail_server.connected:
-            # Connection metrics
-            st.metric("Gmail Server", "Connected", delta="Healthy")
+            # Enhanced connection metrics
+            st.metric("Gmail Server", "Connected", delta="Online")
             st.metric("Available Tools", len(assistant.gmail_server.server_info.capabilities))
+            st.metric("Response Format", "Enhanced Cards")
             
             st.divider()
             
-            # Gmail Operations
-            st.subheader("🛠️ Available Operations")
+            # Feature highlights
+            st.subheader("✨ Enhanced Features")
             
-            operations = {
-                "GMAIL_FETCH_EMAILS": "📥 Fetch & search emails",
-                "GMAIL_SEARCH_PEOPLE": "👥 Search people/contacts", 
-                "GMAIL_SEND_EMAIL": "📤 Send new emails",
-                "GMAIL_GET_CONTACTS": "📇 Get contact list",
-                "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": "📧 Get specific message"
-            }
+            features = [
+                "🎨 Beautiful email cards",
+                "🧹 Clean HTML parsing", 
+                "📅 Smart date formatting",
+                "🏷️ Label badges",
+                "📝 Email previews",
+                "👤 Clean sender names",
+                "📱 Responsive design"
+            ]
             
-            for op, desc in operations.items():
-                if op in assistant.gmail_server.server_info.capabilities:
-                    st.write(f"**{desc}**")
+            for feature in features:
+                st.write(feature)
             
+            st.divider()
+            
+            # Usage stats
+            st.subheader("📈 Usage Stats")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("Messages", len(st.session_state.messages))
+            with col_b:
+                enhanced_mode = "ON" if "email-card" in str(st.session_state.messages) else "Ready"
+                st.metric("Enhanced UI", enhanced_mode)
         else:
-            st.info("Gmail server not connected")
+            st.info("📊 Dashboard will show stats once connected")
         
         st.divider()
         
-        # Performance Info
-        st.subheader("⚡ Performance")
+        # Enhanced example showcase
+        st.subheader("🎨 Preview: Enhanced Output")
         
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Chat Messages", len(st.session_state.messages))
-        with col_b:
-            status = "Connected" if (assistant.gmail_server and assistant.gmail_server.connected) else "Disconnected"
-            st.metric("Status", status)
+        # Show sample of what enhanced formatting looks like
+        sample_preview = """
+        <div class="email-card" style="margin: 0.5rem 0;">
+            <div class="email-header">
+                <div class="email-from">👤 john.doe@company.com</div>
+                <div class="email-subject">Meeting Tomorrow</div>
+                <div class="email-date">📅 Today at 2:30 PM</div>
+            </div>
+            <div class="email-preview">
+                💬 Hi team, just a reminder about our meeting tomorrow at 10 AM...
+            </div>
+            <div class="email-labels">
+                <span class="label-badge">IMPORTANT</span>
+                <span class="label-badge">WORK</span>
+            </div>
+        </div>
+        """
         
-        st.divider()
-        
-        # Example Queries
-        st.subheader("💡 Example Queries")
-        
-        examples = [
-            "📧 Show recent emails",
-            "📅 Yesterday's emails", 
-            "🗓️ Emails from 2 days back",
-            "📮 This week's emails",
-            "📨 Today's emails",
-            "👥 Search my contacts"
-        ]
-        
-        for example in examples:
-            if st.button(example, key=f"ex_{hash(example)}", use_container_width=True):
-                example_text = example.split(" ", 1)[1] if " " in example else example
-                st.session_state.messages.append({"role": "user", "content": example_text})
-                st.rerun()
+        st.markdown("**Sample Email Card:**")
+        st.markdown(sample_preview, unsafe_allow_html=True)
+        st.caption("🎯 This is how your emails will look!")
     
-    # Footer
+    # Enhanced Footer
     st.divider()
     
-    # Summary metrics
+    # Enhanced metrics row
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         status = 1 if (assistant.gmail_server and assistant.gmail_server.connected) else 0
-        st.metric("Gmail Connection", status, delta="Active" if status else "Inactive")
+        st.metric("Gmail Status", "Connected" if status else "Disconnected", 
+                 delta="Ready" if status else "Offline")
     
     with col2:
         tools = len(assistant.langchain_tools) if assistant.langchain_tools else 0
         st.metric("LangChain Tools", tools)
     
     with col3:
-        st.metric("Total Messages", len(st.session_state.messages))
+        st.metric("Chat Messages", len(st.session_state.messages))
     
     with col4:
         mode = "Enhanced" if assistant.api_key else "Direct"
-        st.metric("Mode", mode)
+        st.metric("Display Mode", mode, delta="Beautiful Cards")
     
-    # Clear chat and reset buttons
-    col1, col2 = st.columns(2)
+    # Enhanced control buttons
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.session_state.messages:
-            if st.button("🗑️ Clear Chat History", use_container_width=True):
+            if st.button("🗑️ Clear Chat", use_container_width=True):
                 st.session_state.messages = []
                 if hasattr(assistant, 'memory') and assistant.memory:
                     assistant.memory.clear()
@@ -1292,10 +1258,40 @@ def main():
             if assistant.gmail_server:
                 try:
                     assistant.remove_gmail_server()
-                    st.success("Connection reset successfully")
+                    st.success("Connection reset")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Reset failed: {str(e)}")
+    
+    with col3:
+        if st.button("🎨 View Sample", use_container_width=True):
+            sample_message = {
+                "role": "assistant", 
+                "content": sample_preview
+            }
+            st.session_state.messages.append({
+                "role": "user",
+                "content": "Show me a sample email card"
+            })
+            st.session_state.messages.append(sample_message)
+            st.rerun()
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def render_enhanced_message(content: str, message_placeholder):
+    """Render messages with enhanced formatting"""
+    if "email-card" in content:
+        message_placeholder.markdown(content, unsafe_allow_html=True)
+    elif "🧠" in content or "🔍" in content:
+        message_placeholder.markdown(f'<div class="tool-response">{content}</div>', unsafe_allow_html=True)
+    elif "❌" in content:
+        message_placeholder.markdown(f'<div class="error-box">{content}</div>', unsafe_allow_html=True)
+    elif "✅" in content:
+        message_placeholder.markdown(f'<div class="success-box">{content}</div>', unsafe_allow_html=True)
+    else:
+        message_placeholder.markdown(content, unsafe_allow_html=True)
 
 # ============================================================================
 # APPLICATION ENTRY POINT

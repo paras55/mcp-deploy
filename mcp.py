@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-Enhanced Gmail Workflow Assistant - FULL FIXED VERSION
-- Fixes missing email display (supports list and dict responses)
-- Always returns email cards with proper HTML for Streamlit rendering
-- Debug logging for raw Gmail API response
-- Retains all existing features (CSS, LangChain, enhanced UI)
+Enhanced Gmail Workflow Assistant - BETTER OUTPUT FORMATTING
+Fixes raw HTML output and provides clean, structured email display
+
+LATEST IMPROVEMENTS:
+- ✅ Clean email content parsing (removes HTML)
+- ✅ Better structured email display
+- ✅ Improved date formatting
+- ✅ Enhanced email preview formatting
+- ✅ Cleaner message text extraction
+- ✅ Better error handling for malformed emails
 """
 
 # ============================================================================
 # IMPORTS AND DEPENDENCIES
 # ============================================================================
+
 import streamlit as st
 import json
 import requests
@@ -32,6 +38,7 @@ from pydantic import Field
 # ============================================================================
 # STREAMLIT CONFIGURATION AND STYLING
 # ============================================================================
+
 st.set_page_config(
     page_title="Enhanced Gmail Assistant",
     page_icon="📧",
@@ -39,7 +46,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS STYLES ---
+# Enhanced CSS with better email styling
 st.markdown("""
 <style>
     .main-header {
@@ -50,6 +57,7 @@ st.markdown("""
         text-align: center;
         margin-bottom: 1rem;
     }
+    
     .email-card {
         background: #ffffff;
         border: 1px solid #e1e5e9;
@@ -59,30 +67,36 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         transition: all 0.3s ease;
     }
+    
     .email-card:hover {
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         transform: translateY(-2px);
     }
+    
     .email-header {
         border-bottom: 1px solid #f0f2f5;
         padding-bottom: 0.8rem;
         margin-bottom: 0.8rem;
     }
+    
     .email-from {
         color: #1a73e8;
         font-weight: 600;
         font-size: 1.1em;
     }
+    
     .email-subject {
         color: #202124;
         font-weight: 700;
         font-size: 1.2em;
         margin: 0.4rem 0;
     }
+    
     .email-date {
         color: #5f6368;
         font-size: 0.9em;
     }
+    
     .email-preview {
         background: #f8f9fa;
         padding: 0.8rem;
@@ -92,9 +106,11 @@ st.markdown("""
         color: #495057;
         margin-top: 0.8rem;
     }
+    
     .email-labels {
         margin-top: 0.6rem;
     }
+    
     .label-badge {
         display: inline-block;
         background: #e8f0fe;
@@ -105,6 +121,7 @@ st.markdown("""
         margin-right: 0.4rem;
         margin-bottom: 0.2rem;
     }
+    
     .tool-response {
         background: #e3f2fd;
         padding: 0.75rem;
@@ -112,6 +129,7 @@ st.markdown("""
         border-left: 3px solid #2196f3;
         margin: 0.5rem 0;
     }
+    
     .success-box {
         background: #d4edda;
         color: #155724;
@@ -120,6 +138,7 @@ st.markdown("""
         border-left: 3px solid #28a745;
         margin: 0.5rem 0;
     }
+    
     .error-box {
         background: #f8d7da;
         color: #721c24;
@@ -128,12 +147,14 @@ st.markdown("""
         border-left: 3px solid #dc3545;
         margin: 0.5rem 0;
     }
+    
     .stats-container {
         background: #f8f9fa;
         border-radius: 8px;
         padding: 1rem;
         margin: 1rem 0;
     }
+    
     .no-emails {
         text-align: center;
         color: #6c757d;
@@ -149,41 +170,66 @@ st.markdown("""
 # ============================================================================
 # EMAIL CONTENT PROCESSING UTILITIES
 # ============================================================================
+
 class EmailContentProcessor:
+    """Enhanced email content processing with HTML cleaning and formatting"""
+    
     @staticmethod
     def clean_html_content(html_content: str) -> str:
+        """Remove HTML tags and clean up email content"""
         if not html_content:
             return ""
+        
         try:
+            # Use BeautifulSoup to parse and clean HTML
             soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Remove script and style elements
             for script in soup(["script", "style"]):
                 script.decompose()
+            
+            # Get text content
             text = soup.get_text()
+            
+            # Clean up whitespace
             lines = (line.strip() for line in text.splitlines())
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             text = ' '.join(chunk for chunk in chunks if chunk)
+            
             return text
         except Exception:
+            # Fallback: basic HTML tag removal
             clean_text = re.sub('<[^<]+?>', '', html_content)
             clean_text = html.unescape(clean_text)
             return ' '.join(clean_text.split())
-
+    
     @staticmethod
     def extract_email_preview(content: str, max_length: int = 150) -> str:
+        """Extract a clean preview of email content"""
         if not content:
             return "No preview available"
+        
+        # Clean HTML if present
         if '<' in content and '>' in content:
             content = EmailContentProcessor.clean_html_content(content)
+        
+        # Remove excessive whitespace
         content = ' '.join(content.split())
+        
+        # Truncate and add ellipsis
         if len(content) > max_length:
             content = content[:max_length].rsplit(' ', 1)[0] + "..."
+        
         return content or "No preview available"
-
+    
     @staticmethod
     def format_email_date(date_str: str) -> str:
+        """Format email date in a readable format"""
         if not date_str:
             return "Unknown date"
+        
         try:
+            # Try to parse common date formats
             date_formats = [
                 "%a, %d %b %Y %H:%M:%S %z",
                 "%d %b %Y %H:%M:%S %z", 
@@ -191,6 +237,7 @@ class EmailContentProcessor:
                 "%Y-%m-%dT%H:%M:%S.%fZ",
                 "%Y-%m-%dT%H:%M:%SZ"
             ]
+            
             parsed_date = None
             for fmt in date_formats:
                 try:
@@ -198,11 +245,16 @@ class EmailContentProcessor:
                     break
                 except ValueError:
                     continue
+            
             if parsed_date:
+                # Calculate time difference
                 now = datetime.now()
                 if parsed_date.tzinfo:
+                    # Convert to naive datetime for comparison
                     parsed_date = parsed_date.replace(tzinfo=None)
+                
                 diff = now - parsed_date
+                
                 if diff.days == 0:
                     return f"Today at {parsed_date.strftime('%I:%M %p')}"
                 elif diff.days == 1:
@@ -211,16 +263,22 @@ class EmailContentProcessor:
                     return f"{diff.days} days ago"
                 else:
                     return parsed_date.strftime("%b %d, %Y")
+            
         except Exception:
             pass
-        return str(date_str)[:50]
-
+        
+        return str(date_str)[:50]  # Fallback to original string
+    
     @staticmethod
     def clean_email_address(address: str) -> str:
+        """Clean and format email address"""
         if not address:
             return "Unknown"
+        
+        # Remove angle brackets and extra spaces
         address = str(address).strip()
         if '<' in address and '>' in address:
+            # Extract email from "Name <email@domain.com>" format
             match = re.search(r'<([^>]+)>', address)
             if match:
                 email = match.group(1).strip()
@@ -228,13 +286,16 @@ class EmailContentProcessor:
                 if name_part and name_part != email:
                     return f"{name_part} <{email}>"
                 return email
+        
         return address
 
 # ============================================================================
-# ENHANCED GMAIL MCP ADAPTER (FIXED)
+# ENHANCED GMAIL MCP ADAPTER
 # ============================================================================
+
 @dataclass
 class MCPServerInfo:
+    """Information about an MCP server"""
     name: str
     description: str
     capabilities: List[str]
@@ -244,128 +305,260 @@ class MCPServerInfo:
     connected: bool = False
 
 class EnhancedGmailMCPAdapter:
+    """Enhanced Gmail MCP Adapter with better response formatting"""
+    
     def __init__(self, server_info: MCPServerInfo):
         self.server_info = server_info
         self.connected = False
         self.session_id = None
         self.debug_mode = True
         self.content_processor = EmailContentProcessor()
+        
+        # Create session with proper headers
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Enhanced-Gmail-Assistant/2.1.1",
+            "User-Agent": "Enhanced-Gmail-Assistant/2.1.0",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "Cache-Control": "no-cache"
         })
-
+    
     def _debug_log(self, message: str):
+        """Debug logging helper"""
         if self.debug_mode:
             print(f"[DEBUG] Enhanced Gmail: {message}")
-
+    
     def connect(self):
+        """Connect to the Gmail MCP server"""
         if not self.server_info.url:
             raise Exception("No Gmail server URL provided")
-        init_payload = {
-            "jsonrpc": "2.0",
-            "id": "gmail-init-1",
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {"roots": {"listChanged": True}},
-                "clientInfo": {"name": "Enhanced Gmail Assistant","version": "2.1.1"}
+            
+        self._debug_log(f"Connecting to {self.server_info.url}")
+        
+        try:
+            init_payload = {
+                "jsonrpc": "2.0",
+                "id": "gmail-init-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {
+                        "roots": {"listChanged": True},
+                        "sampling": {}
+                    },
+                    "clientInfo": {
+                        "name": "Enhanced Gmail Assistant",
+                        "version": "2.1.0"
+                    }
+                }
             }
-        }
-        response = self.session.post(self.server_info.url, json=init_payload, timeout=30)
-        if response.status_code == 200:
-            self.connected = True
-            self.server_info.connected = True
-            return True
-        raise Exception(f"HTTP {response.status_code}: {response.text}")
-
+            
+            response = self.session.post(
+                self.server_info.url,
+                json=init_payload,
+                timeout=30
+            )
+            
+            self._debug_log(f"Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                self.connected = True
+                self.server_info.connected = True
+                self._debug_log("✅ Connection successful!")
+                return True
+            else:
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
+                
+        except Exception as e:
+            self._debug_log(f"Connection error: {str(e)}")
+            raise Exception(f"Connection failed: {str(e)}")
+    
+    def disconnect(self):
+        """Disconnect from the Gmail server"""
+        self._debug_log("Disconnecting...")
+        self.connected = False
+        self.server_info.connected = False
+        self.session_id = None
+        if self.session:
+            self.session.close()
+    
     def execute_tool(self, tool_name: str, parameters: dict) -> str:
+        """Execute a Gmail tool and return formatted response"""
         if not self.connected:
-            self.connect()
-        payload = {
-            "jsonrpc": "2.0",
-            "id": f"gmail-{tool_name}-{int(time.time())}",
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": parameters}
-        }
-        response = self.session.post(self.server_info.url, json=payload, timeout=60)
-        if response.status_code == 200:
             try:
-                result = response.json()
-                self._debug_log(f"Raw Gmail result: {json.dumps(result, indent=2)}")
-                return self._format_enhanced_response(result, tool_name)
-            except json.JSONDecodeError:
-                return self._format_enhanced_response({"result": response.text}, tool_name)
-        return f"❌ HTTP {response.status_code}: {response.text}"
-
+                self.connect()
+            except Exception as e:
+                return f"❌ Connection failed: {str(e)}"
+        
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": f"gmail-{tool_name}-{int(time.time())}",
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": parameters
+                }
+            }
+            
+            self._debug_log(f"Executing {tool_name} with params: {parameters}")
+            
+            response = self.session.post(
+                self.server_info.url,
+                json=payload,
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    return self._format_enhanced_response(result, tool_name)
+                except json.JSONDecodeError:
+                    return self._format_enhanced_response({"result": response.text}, tool_name)
+            else:
+                return f"❌ HTTP {response.status_code}: {response.text}"
+                
+        except Exception as e:
+            return f"❌ Error: {str(e)}"
+    
     def _format_enhanced_response(self, result: dict, tool_name: str) -> str:
+        """Enhanced formatting for Gmail responses with structured output"""
         if "error" in result:
             error = result["error"]
             error_msg = error.get('message', str(error)) if isinstance(error, dict) else str(error)
             return f"❌ **Gmail Error:** {error_msg}"
-
+        
         if "result" not in result:
             return "ℹ️ No data returned from Gmail API"
-
+        
         data = result["result"]
-
-        # Handle direct list of emails
-        if isinstance(data, list) and data:
-            return self._format_email_list(data)
-
-        # Handle dict with emails in various keys
+        
+        if not data:
+            return "📧 **No emails found** for the specified criteria"
+        
+        # Handle structured Gmail response
         if isinstance(data, dict):
-            emails_data = data.get("data") or data.get("emails") or None
-            if isinstance(emails_data, list) and emails_data:
-                return self._format_email_list(emails_data)
-
-        return "📧 **No emails found** for the specified criteria"
-
+            if "data" in data:
+                emails_data = data["data"]
+                
+                # Handle successful response with logId
+                if data.get("successful") and "logId" in data:
+                    log_info = f"✅ **Operation Successful** (Log ID: `{data['logId']}`)\n\n"
+                else:
+                    log_info = "✅ **Gmail Operation Completed**\n\n"
+                
+                if not emails_data:
+                    return log_info + "📧 No emails found for the specified time period."
+                
+                # Format emails
+                if isinstance(emails_data, list):
+                    return log_info + self._format_email_list(emails_data)
+                elif isinstance(emails_data, dict):
+                    return log_info + self._format_single_email(emails_data)
+            
+            elif "emails" in data:
+                emails = data["emails"]
+                if isinstance(emails, list) and emails:
+                    return self._format_email_list(emails)
+                else:
+                    return "📧 No emails found for the specified criteria"
+        
+        elif isinstance(data, list) and data:
+            # Direct list of emails
+            return self._format_email_list(data)
+        
+        return "✅ Gmail operation completed successfully"
+    
     def _format_email_list(self, emails: list) -> str:
+        """Format list of emails with enhanced structure"""
         if not emails:
             return '<div class="no-emails">📧 No emails to display</div>'
+        
         total_count = len(emails)
-        display_count = min(20, total_count)
+        display_count = min(20, total_count)  # Limit display
+        
+        # Create header with statistics
         header = f"""
         <div class="stats-container">
             <h3>📧 Gmail Results</h3>
             <p><strong>Found:</strong> {total_count} emails | <strong>Showing:</strong> {display_count}</p>
         </div>
         """
+        
+        # Format each email
         email_cards = []
         for i, email in enumerate(emails[:display_count]):
             email_html = self._format_email_card(email, i + 1)
             if email_html:
                 email_cards.append(email_html)
+        
+        if not email_cards:
+            return header + '<div class="no-emails">No valid emails to display</div>'
+        
         return header + "\n\n" + "\n".join(email_cards)
-
+    
     def _format_email_card(self, email: dict, index: int) -> str:
-        sender = self.content_processor.clean_email_address(email.get("from") or "Unknown Sender")
-        subject = email.get("subject") or "No Subject"
-        content = (email.get("messageText") or email.get("snippet") or email.get("body") or "")
+        """Format single email as a card with enhanced styling"""
+        if not isinstance(email, dict):
+            return ""
+        
+        # Extract and clean email fields
+        sender = self.content_processor.clean_email_address(
+            email.get("from") or email.get("sender") or "Unknown Sender"
+        )
+        
+        subject = email.get("subject") or email.get("title") or "No Subject"
+        
+        # Handle email content/preview
+        content = (
+            email.get("messageText") or 
+            email.get("snippet") or 
+            email.get("body") or 
+            email.get("preview") or 
+            email.get("content") or
+            ""
+        )
+        
         preview = self.content_processor.extract_email_preview(content)
-        formatted_date = self.content_processor.format_email_date(email.get("date") or "")
-        recipients = email.get("to") or "Not specified"
-        if recipients != "Not specified":
+        
+        # Format date
+        date_str = (
+            email.get("date") or 
+            email.get("timestamp") or 
+            email.get("time") or 
+            email.get("receivedTime") or
+            ""
+        )
+        formatted_date = self.content_processor.format_email_date(date_str)
+        
+        # Handle recipients
+        recipients = email.get("to") or email.get("recipients") or ""
+        if recipients:
             recipients = self.content_processor.clean_email_address(str(recipients))
-        labels = email.get("labelIds") or []
+            if len(recipients) > 50:
+                recipients = recipients[:50] + "..."
+        else:
+            recipients = "Not specified"
+        
+        # Handle labels
+        labels = email.get("labelIds") or email.get("labels") or []
         label_badges = ""
-        if labels:
+        if labels and isinstance(labels, list):
             clean_labels = [label for label in labels if label not in ["UNREAD", "INBOX"]]
             if clean_labels:
-                label_badges = '<div class="email-labels">' + ''.join(
-                    f'<span class="label-badge">{label}</span>' for label in clean_labels[:5]
-                ) + '</div>'
-        return f"""
+                label_badges = '<div class="email-labels">'
+                for label in clean_labels[:5]:  # Show max 5 labels
+                    label_badges += f'<span class="label-badge">{label}</span>'
+                label_badges += '</div>'
+        
+        # Create email card HTML
+        email_card = f"""
         <div class="email-card">
             <div class="email-header">
                 <div class="email-from">👤 {html.escape(sender)}</div>
                 <div class="email-subject">{html.escape(subject)}</div>
                 <div class="email-date">📅 {html.escape(formatted_date)}</div>
-                {f'<div style="color: #5f6368; font-size: 0.9em;">📨 To: {html.escape(recipients)}</div>' if recipients != "Not specified" else ''}
+                {f'<div style="color: #5f6368; font-size: 0.9em; margin-top: 0.3rem;">📨 To: {html.escape(recipients)}</div>' if recipients != "Not specified" else ''}
             </div>
             <div class="email-preview">
                 💬 {html.escape(preview)}

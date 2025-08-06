@@ -376,12 +376,12 @@ class GmailMCPAdapter:
             return response_text
     
     def _format_gmail_response(self, result: dict) -> str:
-        """Format Gmail-specific responses with better handling for actual API responses"""
+        """Format Gmail-specific responses with better handling for actual API responses and HTML escaping"""
         if "error" in result:
             error = result["error"]
             if isinstance(error, dict):
-                return f"❌ Gmail Error: {error.get('message', str(error))}"
-            return f"❌ Gmail Error: {error}"
+                return f"❌ Gmail Error: {self._safe_html_escape(error.get('message', str(error)))}"
+            return f"❌ Gmail Error: {self._safe_html_escape(str(error))}"
         
         if "result" in result:
             data = result["result"]
@@ -403,9 +403,18 @@ class GmailMCPAdapter:
                     # Handle successful API response with logId
                     if "successful" in data and data["successful"]:
                         if "logId" in data:
-                            return f"✅ **Gmail Operation Successful**\nLog ID: {data['logId']}\n\n📧 **Response:** {json.dumps(response_data, indent=2) if response_data else 'No data returned'}"
+                            log_id = self._safe_html_escape(str(data['logId']))
+                            if response_data:
+                                formatted_data = self._safe_format_response_data(response_data)
+                                return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}\n\n📧 **Response:** {formatted_data}"
+                            else:
+                                return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}\n\n📧 No data returned"
                         else:
-                            return f"✅ **Gmail Operation Successful**\n\n📧 **Response:** {json.dumps(response_data, indent=2) if response_data else 'No data returned'}"
+                            if response_data:
+                                formatted_data = self._safe_format_response_data(response_data)
+                                return f"✅ **Gmail Operation Successful**\n\n📧 **Response:** {formatted_data}"
+                            else:
+                                return "✅ **Gmail Operation Successful** - No data returned"
                     
                     # Handle list of emails
                     if isinstance(response_data, list) and len(response_data) > 0:
@@ -428,18 +437,19 @@ class GmailMCPAdapter:
                     if isinstance(content, list) and len(content) > 0:
                         first_content = content[0]
                         if isinstance(first_content, dict):
-                            return first_content.get("text", str(content))
-                        return str(first_content)
+                            return self._safe_html_escape(first_content.get("text", str(content)))
+                        return self._safe_html_escape(str(first_content))
                     else:
-                        return str(content) if content else "ℹ️ Empty response"
+                        return self._safe_html_escape(str(content)) if content else "ℹ️ Empty response"
                 
                 elif "message" in data:
-                    return f"📧 Gmail: {data['message']}"
+                    return f"📧 Gmail: {self._safe_html_escape(str(data['message']))}"
                 
                 # Handle successful operation responses
                 elif "successful" in data and data["successful"]:
                     if "logId" in data:
-                        return f"✅ **Gmail Operation Successful**\nLog ID: {data['logId']}"
+                        log_id = self._safe_html_escape(str(data['logId']))
+                        return f"✅ **Gmail Operation Successful**\nLog ID: {log_id}"
                     else:
                         return "✅ **Gmail Operation Successful**"
                 
@@ -448,10 +458,14 @@ class GmailMCPAdapter:
                     if isinstance(data, dict) and len(data) < 10:
                         formatted_lines = []
                         for key, value in data.items():
-                            formatted_lines.append(f"**{key}:** {value}")
+                            safe_key = self._safe_html_escape(str(key))
+                            safe_value = self._safe_html_escape(str(value))
+                            formatted_lines.append(f"**{safe_key}:** {safe_value}")
                         return "\n".join(formatted_lines) if formatted_lines else "ℹ️ Empty response"
                     else:
-                        return f"✅ **Gmail Operation Completed**\n```json\n{json.dumps(data, indent=2)[:1000]}...\n```"
+                        # For complex data, use code block to prevent HTML parsing issues
+                        safe_data = json.dumps(data, indent=2)[:1000]
+                        return f"✅ **Gmail Operation Completed**\n```json\n{safe_data}...\n```"
                         
             elif isinstance(data, list):
                 if len(data) > 0:
@@ -459,13 +473,47 @@ class GmailMCPAdapter:
                     if all(isinstance(item, dict) and any(key in item for key in ['subject', 'from', 'to', 'sender', 'recipients']) for item in data):
                         return self._format_email_list(data)
                     else:
-                        return "\n".join([f"• {item}" for item in data[:20]])
+                        safe_items = [self._safe_html_escape(str(item)) for item in data[:20]]
+                        return "\n".join([f"• {item}" for item in safe_items])
                 else:
                     return "ℹ️ No results returned"
             else:
-                return str(data) if data else "ℹ️ Empty response"
+                return self._safe_html_escape(str(data)) if data else "ℹ️ Empty response"
         
         return "✅ Gmail operation completed successfully"
+    
+    def _safe_format_response_data(self, data):
+        """Safely format response data to prevent HTML issues"""
+        try:
+            if isinstance(data, (dict, list)):
+                # Use code block for complex data to prevent HTML parsing
+                return f"```json\n{json.dumps(data, indent=2)[:500]}...\n```"
+            else:
+                return self._safe_html_escape(str(data))
+        except Exception:
+            return self._safe_html_escape(str(data))
+    
+    def _safe_html_escape(self, text: str) -> str:
+        """Safely escape HTML characters that might cause issues"""
+        if not text:
+            return ""
+        
+        # Convert to string if not already
+        text = str(text)
+        
+        # Replace problematic characters that could be interpreted as HTML
+        replacements = {
+            '<': '&lt;',
+            '>': '&gt;',
+            '&': '&amp;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }
+        
+        for char, replacement in replacements.items():
+            text = text.replace(char, replacement)
+        
+        return text
     
     def _format_email_list(self, emails: list) -> str:
         """Format a list of emails for display"""
@@ -483,9 +531,9 @@ class GmailMCPAdapter:
         return header + "\n\n".join(email_list) if email_list else "📧 No emails to display"
     
     def _format_single_email(self, email: dict, index: int = None) -> str:
-        """Format a single email for display"""
+        """Format a single email for display with proper HTML escaping"""
         if not isinstance(email, dict):
-            return f"• {str(email)}"
+            return f"• {self._safe_html_escape(str(email))}"
         
         # Extract email fields with multiple possible key names
         sender = email.get("from") or email.get("sender") or "Unknown Sender"
@@ -493,19 +541,26 @@ class GmailMCPAdapter:
         date = email.get("date") or email.get("timestamp") or email.get("time") or "Unknown Date"
         snippet = email.get("snippet") or email.get("body") or email.get("preview") or email.get("content")
         
+        # Safely escape all fields to prevent HTML issues
+        sender = self._safe_html_escape(str(sender))
+        subject = self._safe_html_escape(str(subject))
+        date = self._safe_html_escape(str(date))
+        
         # Clean up snippet
         if snippet:
             if isinstance(snippet, str):
                 snippet = snippet[:150] + "..." if len(snippet) > 150 else snippet
                 # Remove extra whitespace and line breaks
                 snippet = ' '.join(snippet.split())
+                snippet = self._safe_html_escape(snippet)
             else:
-                snippet = str(snippet)[:150] + "..."
+                snippet = self._safe_html_escape(str(snippet)[:150] + "...")
         else:
             snippet = "No preview available"
         
         # Handle recipients (to field)
         recipients = email.get("to") or email.get("recipients") or "Not specified"
+        recipients = self._safe_html_escape(str(recipients))
         
         prefix = f"**📧 Email {index}:**" if index else "**📧 Email:**"
         
@@ -517,6 +572,28 @@ class GmailMCPAdapter:
 💬 **Preview:** {snippet}"""
         
         return email_entry
+    
+    def _safe_html_escape(self, text: str) -> str:
+        """Safely escape HTML characters that might cause issues"""
+        if not text:
+            return ""
+        
+        # Convert to string if not already
+        text = str(text)
+        
+        # Replace problematic characters that could be interpreted as HTML
+        replacements = {
+            '<': '&lt;',
+            '>': '&gt;',
+            '&': '&amp;',
+            '"': '&quot;',
+            "'": '&#39;'
+        }
+        
+        for char, replacement in replacements.items():
+            text = text.replace(char, replacement)
+        
+        return text
 
 # ============================================================================
 # GMAIL LANGCHAIN TOOL - UPDATED WITH CORRECT ACTION NAMES

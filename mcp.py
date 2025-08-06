@@ -556,7 +556,7 @@ class GmailWorkflowAssistant:
         self.server_template = MCPServerInfo(
             name="Gmail",
             description="Gmail email management and operations",
-            capabilities=["GMAIL_SEND_EMAIL", "GMAIL_GET_MESSAGES", "GMAIL_SEARCH_MESSAGES", "connect-gmail"],
+            capabilities=["GMAIL_SEND_EMAIL", " GMAIL_FETCH_EMAILS", "GMAIL_SEARCH_PEOPLE", "connect-gmail"],
             icon="📧",
             category="Email"
         )
@@ -724,7 +724,7 @@ class GmailWorkflowAssistant:
             }
         else:
             # Default to search/get messages
-            action = "GMAIL_SEARCH_MESSAGES"
+            action = "GMAIL_SEARCH_PEOPLE"
             
             # Parse time-based requests
             if "2 days" in user_input_lower or "two days" in user_input_lower:

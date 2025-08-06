@@ -1054,9 +1054,9 @@ def main():
             st.subheader("🛠️ Available Operations")
             
             operations = {
-                "GMAIL_SEARCH_MESSAGES": "🔍 Search & retrieve emails",
+                "GMAIL_FETCH_EMAILS": "🔍 Search & retrieve emails",
                 "GMAIL_GET_MESSAGES": "📥 Get specific messages", 
-                "GMAIL_SEND_EMAIL": "📤 Send new emails",
+                "GMAIL_SEARCH_PEOPLE": "📤 Send new emails",
                 "connect-gmail": "🔗 Manage connection"
             }
             

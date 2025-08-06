@@ -5,11 +5,13 @@ Focused on Gmail integration only, fixes HTTP 406 error
 
 LATEST FIXES:
 - ✅ Fixed HTTP 406 "Not Acceptable" error
-- ✅ Gmail-focused functionality only
+- ✅ Updated Gmail action names to match actual API
+- ✅ Fixed response parsing for actual Gmail API responses
 - ✅ Proper Accept headers for MCP servers
 - ✅ Better SSE (Server-Sent Events) handling
 - ✅ No event loop issues
 - ✅ Robust error handling
+- ✅ Changed header color
 """
 
 # ============================================================================
@@ -44,11 +46,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS
+# Enhanced CSS with new header color
 st.markdown("""
 <style>
     .main-header {
-        background: linear-gradient(90deg, #ea4335 0%, #fbbc05 25%, #34a853 50%, #4285f4 75%);
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
         padding: 1rem;
         border-radius: 10px;
         color: white;
@@ -374,7 +376,7 @@ class GmailMCPAdapter:
             return response_text
     
     def _format_gmail_response(self, result: dict) -> str:
-        """Format Gmail-specific responses"""
+        """Format Gmail-specific responses with better handling for actual API responses"""
         if "error" in result:
             error = result["error"]
             if isinstance(error, dict):
@@ -384,11 +386,37 @@ class GmailMCPAdapter:
         if "result" in result:
             data = result["result"]
             
+            # Handle null or empty responses
             if data is None:
-                return "ℹ️ No emails found for the specified criteria"
+                return "ℹ️ No data returned from Gmail API"
             
+            # Handle successful response with data field
             if isinstance(data, dict):
-                if "emails" in data:
+                # Check for the actual response structure
+                if "data" in data:
+                    response_data = data["data"]
+                    
+                    # Handle empty response_data
+                    if not response_data:
+                        return "📧 No emails found for the specified criteria"
+                    
+                    # Handle successful API response with logId
+                    if "successful" in data and data["successful"]:
+                        if "logId" in data:
+                            return f"✅ **Gmail Operation Successful**\nLog ID: {data['logId']}\n\n📧 **Response:** {json.dumps(response_data, indent=2) if response_data else 'No data returned'}"
+                        else:
+                            return f"✅ **Gmail Operation Successful**\n\n📧 **Response:** {json.dumps(response_data, indent=2) if response_data else 'No data returned'}"
+                    
+                    # Handle list of emails
+                    if isinstance(response_data, list) and len(response_data) > 0:
+                        return self._format_email_list(response_data)
+                    
+                    # Handle single email object
+                    if isinstance(response_data, dict):
+                        return self._format_single_email(response_data)
+                
+                # Handle other response formats
+                elif "emails" in data:
                     emails = data["emails"]
                     if isinstance(emails, list) and len(emails) > 0:
                         return self._format_email_list(emails)
@@ -406,23 +434,29 @@ class GmailMCPAdapter:
                         return str(content) if content else "ℹ️ Empty response"
                 
                 elif "message" in data:
-                    # Handle single message response
                     return f"📧 Gmail: {data['message']}"
                 
+                # Handle successful operation responses
+                elif "successful" in data and data["successful"]:
+                    if "logId" in data:
+                        return f"✅ **Gmail Operation Successful**\nLog ID: {data['logId']}"
+                    else:
+                        return "✅ **Gmail Operation Successful**"
+                
                 else:
-                    # Handle other response types
+                    # Handle generic response
                     if isinstance(data, dict) and len(data) < 10:
                         formatted_lines = []
                         for key, value in data.items():
                             formatted_lines.append(f"**{key}:** {value}")
                         return "\n".join(formatted_lines) if formatted_lines else "ℹ️ Empty response"
                     else:
-                        return f"✅ **Gmail Operation Successful**\n```json\n{json.dumps(data, indent=2)[:1000]}...\n```"
+                        return f"✅ **Gmail Operation Completed**\n```json\n{json.dumps(data, indent=2)[:1000]}...\n```"
                         
             elif isinstance(data, list):
                 if len(data) > 0:
                     # Check if it's a list of emails
-                    if all(isinstance(item, dict) and any(key in item for key in ['subject', 'from', 'to']) for item in data):
+                    if all(isinstance(item, dict) and any(key in item for key in ['subject', 'from', 'to', 'sender', 'recipients']) for item in data):
                         return self._format_email_list(data)
                     else:
                         return "\n".join([f"• {item}" for item in data[:20]])
@@ -437,40 +471,59 @@ class GmailMCPAdapter:
         """Format a list of emails for display"""
         email_list = []
         for i, email in enumerate(emails[:15]):  # Show up to 15 emails
-            sender = email.get("from", "Unknown Sender")
-            subject = email.get("subject", "No Subject")
-            date = email.get("date", "Unknown Date")
-            snippet = email.get("snippet", email.get("body", ""))
-            
-            # Clean up snippet
-            if snippet:
+            email_entry = self._format_single_email(email, i+1)
+            if email_entry:
+                email_list.append(email_entry)
+        
+        total_count = len(emails)
+        displayed_count = len(email_list)
+        
+        header = f"📧 **Found {total_count} emails** (showing {displayed_count}):\n\n"
+        
+        return header + "\n\n".join(email_list) if email_list else "📧 No emails to display"
+    
+    def _format_single_email(self, email: dict, index: int = None) -> str:
+        """Format a single email for display"""
+        if not isinstance(email, dict):
+            return f"• {str(email)}"
+        
+        # Extract email fields with multiple possible key names
+        sender = email.get("from") or email.get("sender") or "Unknown Sender"
+        subject = email.get("subject") or email.get("title") or "No Subject"
+        date = email.get("date") or email.get("timestamp") or email.get("time") or "Unknown Date"
+        snippet = email.get("snippet") or email.get("body") or email.get("preview") or email.get("content")
+        
+        # Clean up snippet
+        if snippet:
+            if isinstance(snippet, str):
                 snippet = snippet[:150] + "..." if len(snippet) > 150 else snippet
                 # Remove extra whitespace and line breaks
                 snippet = ' '.join(snippet.split())
             else:
-                snippet = "No preview available"
-            
-            email_entry = f"""**📧 Email {i+1}:**
+                snippet = str(snippet)[:150] + "..."
+        else:
+            snippet = "No preview available"
+        
+        # Handle recipients (to field)
+        recipients = email.get("to") or email.get("recipients") or "Not specified"
+        
+        prefix = f"**📧 Email {index}:**" if index else "**📧 Email:**"
+        
+        email_entry = f"""{prefix}
 👤 **From:** {sender}
 📝 **Subject:** {subject}  
 📅 **Date:** {date}
+📨 **To:** {recipients}
 💬 **Preview:** {snippet}"""
-            
-            email_list.append(email_entry)
         
-        total_count = len(emails)
-        displayed_count = min(15, total_count)
-        
-        header = f"📧 **Found {total_count} emails** (showing {displayed_count}):\n\n"
-        
-        return header + "\n\n".join(email_list)
+        return email_entry
 
 # ============================================================================
-# GMAIL LANGCHAIN TOOL - NO ASYNC ISSUES
+# GMAIL LANGCHAIN TOOL - UPDATED WITH CORRECT ACTION NAMES
 # ============================================================================
 
 class GmailTool(BaseTool):
-    """Gmail-focused LangChain Tool"""
+    """Gmail-focused LangChain Tool with updated action names"""
     name: str = Field()
     description: str = Field()
     server_adapter: Any = Field()
@@ -487,7 +540,7 @@ class GmailTool(BaseTool):
             return f"❌ Error executing {self.tool_name}: {str(e)}\n\n🔧 Debug trace:\n{error_trace}"
     
     def _parse_query_params(self, query: str) -> dict:
-        """Parse query into Gmail-specific parameters"""
+        """Parse query into Gmail-specific parameters with updated action names"""
         params = {}
         query_lower = query.lower()
         
@@ -497,8 +550,8 @@ class GmailTool(BaseTool):
                 "subject": f"Message: {query}",
                 "body": query
             }
-        elif self.tool_name in ["GMAIL_GET_MESSAGES", "GMAIL_SEARCH_MESSAGES"]:
-            # Parse time-based queries with better date handling
+        elif self.tool_name == "GMAIL_FETCH_EMAILS":
+            # Parse time-based queries for fetching emails
             if "yesterday" in query_lower:
                 yesterday = datetime.now() - timedelta(days=1)
                 params = {
@@ -536,27 +589,32 @@ class GmailTool(BaseTool):
                     "query": "in:inbox",
                     "max_results": 25
                 }
-                
-        elif self.tool_name == "connect-gmail":
-            params = {}
+        elif self.tool_name == "GMAIL_SEARCH_PEOPLE":
+            params = {"query": query}
         else:
             params = {"query": query}
         
         return params
 
 # ============================================================================
-# GMAIL WORKFLOW ASSISTANT
+# GMAIL WORKFLOW ASSISTANT - UPDATED WITH CORRECT ACTIONS
 # ============================================================================
 
 class GmailWorkflowAssistant:
-    """Gmail-focused Workflow Assistant"""
+    """Gmail-focused Workflow Assistant with updated action names"""
     
     def __init__(self, api_key: str = None, model: str = "anthropic/claude-3.5-sonnet"):
-        # Gmail server template
+        # Updated Gmail server template with correct action names
         self.server_template = MCPServerInfo(
             name="Gmail",
             description="Gmail email management and operations",
-            capabilities=["GMAIL_SEND_EMAIL", " GMAIL_FETCH_EMAILS", "GMAIL_SEARCH_PEOPLE", "connect-gmail"],
+            capabilities=[
+                "GMAIL_FETCH_EMAILS",
+                "GMAIL_SEARCH_PEOPLE", 
+                "GMAIL_SEND_EMAIL",
+                "GMAIL_GET_CONTACTS",
+                "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID"
+            ],
             icon="📧",
             category="Email"
         )
@@ -689,7 +747,7 @@ class GmailWorkflowAssistant:
             yield f"🔧 **Debug info:** {traceback.format_exc()}"
     
     def _direct_process_request(self, user_input: str):
-        """Direct Gmail execution"""
+        """Direct Gmail execution with updated action names"""
         # Parse Gmail intent
         intent = self._parse_gmail_intent(user_input)
         
@@ -710,7 +768,7 @@ class GmailWorkflowAssistant:
             yield f"🔧 **Debug:** {traceback.format_exc()}"
     
     def _parse_gmail_intent(self, user_input: str) -> dict:
-        """Parse user intent for Gmail operations"""
+        """Parse user intent for Gmail operations with updated action names"""
         user_input_lower = user_input.lower()
         
         if "send" in user_input_lower and "email" in user_input_lower:
@@ -722,9 +780,14 @@ class GmailWorkflowAssistant:
                     "body": "Hello from Gmail Assistant!"
                 }
             }
+        elif "contact" in user_input_lower or "people" in user_input_lower:
+            return {
+                "action": "GMAIL_SEARCH_PEOPLE",
+                "params": {"query": user_input}
+            }
         else:
-            # Default to search/get messages
-            action = "GMAIL_SEARCH_PEOPLE"
+            # Default to fetch emails
+            action = "GMAIL_FETCH_EMAILS"
             
             # Parse time-based requests
             if "2 days" in user_input_lower or "two days" in user_input_lower:
@@ -800,8 +863,8 @@ def main():
     st.markdown("""
     <div class="main-header">
         <h1>📧 Gmail Workflow Assistant</h1>
-        <p>FINAL FIXED VERSION - HTTP 406 Error Resolved!</p>
-        <p style="font-size: 0.9em; opacity: 0.9;">✅ Proper Accept Headers • ✅ SSE Support • ✅ No Event Loops • ✅ Gmail Focused</p>
+        <p>FINAL FIXED VERSION - Updated with Correct Gmail Actions!</p>
+        <p style="font-size: 0.9em; opacity: 0.9;">✅ Correct Action Names • ✅ Better Response Parsing • ✅ HTTP 406 Fixed • ✅ Gmail Focused</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -891,9 +954,17 @@ def main():
                 
                 # Show capabilities
                 st.write("**Available Operations:**")
+                operations_display = {
+                    "GMAIL_FETCH_EMAILS": "📥 Fetch Emails",
+                    "GMAIL_SEARCH_PEOPLE": "👥 Search People", 
+                    "GMAIL_SEND_EMAIL": "📤 Send Email",
+                    "GMAIL_GET_CONTACTS": "📇 Get Contacts",
+                    "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": "📧 Get Message by ID"
+                }
+                
                 for capability in assistant.gmail_server.server_info.capabilities:
-                    friendly_name = capability.replace('GMAIL_', '').replace('_', ' ').title()
-                    st.write(f"• {friendly_name}")
+                    display_name = operations_display.get(capability, capability.replace('_', ' ').title())
+                    st.write(f"• {display_name}")
                     
                 # Show server info
                 masked_url = gmail_url[:40] + "..." if len(gmail_url) > 40 else gmail_url
@@ -915,7 +986,8 @@ def main():
                 ("📅 Yesterday's Emails", "Get my emails from yesterday"),
                 ("🗓️ 2 Days Back", "Show emails from 2 days back"),
                 ("📮 This Week", "Get emails from this week"),
-                ("📨 Today's Emails", "Show me today's emails")
+                ("📨 Today's Emails", "Show me today's emails"),
+                ("👥 Search People", "Search people in my contacts")
             ]
             
             for action_name, action_prompt in quick_actions:
@@ -966,6 +1038,11 @@ def main():
             - Check date filters in your request
             - Verify Gmail account has emails
             - Try "recent emails" first
+            
+            **Empty Response Data:**
+            - This is normal if no emails match criteria
+            - Try broader search terms
+            - Check different time periods
             """)
     
     # Main Content Area
@@ -1038,6 +1115,7 @@ def main():
             - "What emails did I receive 2 days back?"
             - "Show me this week's emails"
             - "Get today's emails"
+            - "Search people in my contacts"
             """)
     
     with col2:
@@ -1054,10 +1132,11 @@ def main():
             st.subheader("🛠️ Available Operations")
             
             operations = {
-                "GMAIL_FETCH_EMAILS": "🔍 Search & retrieve emails",
-                "GMAIL_GET_MESSAGES": "📥 Get specific messages", 
-                "GMAIL_SEARCH_PEOPLE": "📤 Send new emails",
-                "connect-gmail": "🔗 Manage connection"
+                "GMAIL_FETCH_EMAILS": "📥 Fetch & search emails",
+                "GMAIL_SEARCH_PEOPLE": "👥 Search people/contacts", 
+                "GMAIL_SEND_EMAIL": "📤 Send new emails",
+                "GMAIL_GET_CONTACTS": "📇 Get contact list",
+                "GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID": "📧 Get specific message"
             }
             
             for op, desc in operations.items():
@@ -1090,7 +1169,7 @@ def main():
             "🗓️ Emails from 2 days back",
             "📮 This week's emails",
             "📨 Today's emails",
-            "🔍 Search for specific emails"
+            "👥 Search my contacts"
         ]
         
         for example in examples:

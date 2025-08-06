@@ -5,6 +5,8 @@ streamlit
 aiohttp
 requests
 
+beautifulsoup4
+
 # LangChain for AI workflow orchestration
 langchain
 langchain-openai
